@@ -37,7 +37,7 @@
 #define CSID_VERSION_V40 0x40000000
 #define MSM_CSID_DRV_NAME "msm_csid"
 
-#define DBG_CSID 1
+#define DBG_CSID 0
 
 /* #48: 0x3210 mapped phy1 (clock) as data (pkts=0, irq 0xd000dd).
  * 0x4320 keeps clock on phy1 and counts packets (header ECC).
@@ -45,17 +45,23 @@
  * #49: 0x0234 same ECC as 0x4320 (ln0=phy4). #58 P/N invert same ECC.
  * #59: ln0=phy2 (0x4302) same ECC. #60: ln0=phy3 (0x4203) same ECC.
  * ln0 sweep {0,2,3,4} all ECC. Default back to 0x4320. */
-static int cityman_lane_assign = 0x4320;
+/* Lumia 950 XL: 4 data lanes DL0..DL3 on Pins 3, 2, 4, 0 (0x0423).
+ * Pin 1 is Clock. */
+static int cityman_lane_assign = 0x0423;
 module_param_named(lane_assign, cityman_lane_assign, int, 0644);
 MODULE_PARM_DESC(lane_assign, "CSID lane_assign override; -1 = DT");
 
-/* WP FUN_0041ddd4 live CORE_CTRL_1: phy_sel<<17 | 0x1000F. */
-static int cityman_ctrl1_or = 0x1000F;
+static int cityman_lane_cnt = 4;
+module_param_named(lane_cnt, cityman_lane_cnt, int, 0644);
+MODULE_PARM_DESC(lane_cnt, "CSID lane_cnt override; -1 = DT/HAL");
+
+/* Stock CAF CORE_CTRL_1: 0xF. */
+static int cityman_ctrl1_or = 0xF;
 module_param_named(ctrl1_or, cityman_ctrl1_or, int, 0644);
 MODULE_PARM_DESC(ctrl1_or, "OR into CSID CORE_CTRL_1; -1 = stock 0xF");
 
 /* CAF CSID TG: skip PHY CORE_CTRL, 4080x3028 RAW10 incrementing. */
-static int cityman_tg = 1;
+static int cityman_tg = 0;
 module_param_named(tg, cityman_tg, int, 0644);
 MODULE_PARM_DESC(tg, "1 = CSID test generator (0xa06437)");
 static int cityman_tg_w = 4080;
@@ -65,6 +71,32 @@ module_param_named(tg_h, cityman_tg_h, int, 0644);
 static int cityman_tg_mode = 1;
 module_param_named(tg_mode, cityman_tg_mode, int, 0644);
 MODULE_PARM_DESC(tg_mode, "CSID TG payload 2:0 (1=incrementing)");
+
+static struct csid_device *cityman_late_csid;
+static int cityman_late_csid_iter;
+static void cityman_csid_late_fn(struct work_struct *w);
+static DECLARE_DELAYED_WORK(cityman_csid_late, cityman_csid_late_fn);
+
+static void cityman_csid_late_fn(struct work_struct *w) {
+  struct csid_device *d = cityman_late_csid;
+  void __iomem *base;
+  if (!d || !d->base)
+    return;
+  base = d->base;
+  pr_err("cityman_csid late #%d pkts=0x%x ecc=0x%x crc=0x%x irq_stat=0x%x "
+         "long_hdr=0x%x mmap_hdr=0x%x unmap_hdr=0x%x short=0x%x ctrl0=0x%x "
+         "ctrl1=0x%x misr=0x%x/0x%x/0x%x/0x%x\n",
+         cityman_late_csid_iter, msm_camera_io_r(base + 0x90),
+         msm_camera_io_r(base + 0x94), msm_camera_io_r(base + 0x98),
+         msm_camera_io_r(base + 0x68), msm_camera_io_r(base + 0x78),
+         msm_camera_io_r(base + 0x70), msm_camera_io_r(base + 0x6c),
+         msm_camera_io_r(base + 0x74), msm_camera_io_r(base + 0x4),
+         msm_camera_io_r(base + 0x8), msm_camera_io_r(base + 0x80),
+         msm_camera_io_r(base + 0x84), msm_camera_io_r(base + 0x88),
+         msm_camera_io_r(base + 0x8c));
+  if (++cityman_late_csid_iter < 8)
+    schedule_delayed_work(&cityman_csid_late, msecs_to_jiffies(400));
+}
 
 #define TRUE 1
 #define FALSE 0
@@ -133,27 +165,13 @@ static int msm_csid_cid_lut(struct msm_camera_csid_lut_params *csid_lut_params,
                              csid_dev->ctrl_reg->csid_reg.csid_cid_n_cfg_addr +
                              (csid_lut_params->vc_cfg[i]->cid * 4));
   }
-  /* WP VF: user-defined DT 0x30 + DPCM 10-8-10, not RAW10 0x2B. */
-  msm_camera_io_w(0x00361230,
-                  csid_dev->base +
-                      csid_dev->ctrl_reg->csid_reg.csid_cid_lut_vc_0_addr);
-  msm_camera_io_w(0x51, csid_dev->base +
-                            csid_dev->ctrl_reg->csid_reg.csid_cid_n_cfg_addr);
-  msm_camera_io_w(0x22, csid_dev->base +
-                            csid_dev->ctrl_reg->csid_reg.csid_cid_n_cfg_addr +
-                            4);
-  msm_camera_io_w(0x22, csid_dev->base +
-                            csid_dev->ctrl_reg->csid_reg.csid_cid_n_cfg_addr +
-                            8);
-  pr_err("cityman_csid wp lut 0x%x cid0=0x%x cid1=0x%x cid2=0x%x\n",
+  pr_err("cityman_csid programmed lut vc0=0x%x cid0_cfg=0x%x cid1_cfg=0x%x\n",
          msm_camera_io_r(csid_dev->base +
                          csid_dev->ctrl_reg->csid_reg.csid_cid_lut_vc_0_addr),
          msm_camera_io_r(csid_dev->base +
                          csid_dev->ctrl_reg->csid_reg.csid_cid_n_cfg_addr),
          msm_camera_io_r(csid_dev->base +
-                         csid_dev->ctrl_reg->csid_reg.csid_cid_n_cfg_addr + 4),
-         msm_camera_io_r(csid_dev->base +
-                         csid_dev->ctrl_reg->csid_reg.csid_cid_n_cfg_addr + 8));
+                         csid_dev->ctrl_reg->csid_reg.csid_cid_n_cfg_addr + 4));
   return rc;
 }
 
@@ -198,6 +216,8 @@ static int msm_csid_config(struct csid_device *csid_dev,
 
   if (cityman_lane_assign >= 0)
     csid_params->lane_assign = cityman_lane_assign;
+  if (cityman_lane_cnt > 0)
+    csid_params->lane_cnt = cityman_lane_cnt;
   pr_err("cityman_csid id=%d lanes=%u assign=0x%x phy_sel=%u usr_clk=%u "
          "override=0x%x\n",
          csid_dev->pdev->id, csid_params->lane_cnt, csid_params->lane_assign,
@@ -309,6 +329,9 @@ static int msm_csid_config(struct csid_device *csid_dev,
                     csidbase + csid_dev->ctrl_reg->csid_reg.csid_tg_ctrl_addr);
     pr_err("cityman_csid tg WP disable 0xa06436 (never on)\n");
   }
+  cityman_late_csid = csid_dev;
+  cityman_late_csid_iter = 0;
+  schedule_delayed_work(&cityman_csid_late, msecs_to_jiffies(300));
   return rc;
 }
 
@@ -388,6 +411,8 @@ static int msm_csid_subdev_g_chip_ident(struct v4l2_subdev *sd,
   return 0;
 }
 
+static int msm_csid_release(struct csid_device *csid_dev);
+
 static int msm_csid_init(struct csid_device *csid_dev, uint32_t *csid_version) {
   int rc = 0;
 
@@ -400,9 +425,9 @@ static int msm_csid_init(struct csid_device *csid_dev, uint32_t *csid_version) {
   csid_dev->reg_ptr = NULL;
 
   if (csid_dev->csid_state == CSID_POWER_UP) {
-    pr_err("%s: csid invalid state %d\n", __func__, csid_dev->csid_state);
-    rc = -EINVAL;
-    return rc;
+    pr_warn("%s: csid already in state %d, resetting\n", __func__,
+            csid_dev->csid_state);
+    msm_csid_release(csid_dev);
   }
 
   csid_dev->base = ioremap(csid_dev->mem->start, resource_size(csid_dev->mem));
@@ -514,10 +539,10 @@ vreg_config_failed:
 static int msm_csid_release(struct csid_device *csid_dev) {
   uint32_t irq;
 
-  if (csid_dev->csid_state != CSID_POWER_UP) {
-    pr_err("%s: csid invalid state %d\n", __func__, csid_dev->csid_state);
-    return -EINVAL;
-  }
+  cancel_delayed_work_sync(&cityman_csid_late);
+
+  if (csid_dev->csid_state != CSID_POWER_UP)
+    return 0;
 
   CDBG("%s:%d, hw_version = 0x%x\n", __func__, __LINE__, csid_dev->hw_version);
 

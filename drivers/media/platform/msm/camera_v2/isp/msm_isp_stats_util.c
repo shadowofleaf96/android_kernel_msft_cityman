@@ -297,7 +297,9 @@ int msm_isp_stats_create_stream(struct vfe_device *vfe_dev,
 
 	if (!(vfe_dev->hw_info->stats_hw_info->stats_capability_mask &
 		(1 << stream_req_cmd->stats_type))) {
-		pr_err("%s: Stats type not supported\n", __func__);
+		pr_err("%s: Stats type %d not supported (mask=0x%x)\n", __func__,
+			stream_req_cmd->stats_type,
+			vfe_dev->hw_info->stats_hw_info->stats_capability_mask);
 		return rc;
 	}
 

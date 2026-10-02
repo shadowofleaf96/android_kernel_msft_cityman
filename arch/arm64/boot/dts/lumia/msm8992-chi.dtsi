@@ -18,7 +18,6 @@
  #include "common/sdhc.dtsi"
  #include "common/haptics.dtsi"
  #include "common/touch.dtsi"
- #include "common/silabs.dtsi"
  #include "common/sidekeys.dtsi"
  #include "common/audio.dtsi"
  #include "common/adc.dtsi"
@@ -291,14 +290,14 @@
  };
  
  /{
-	 talkman_batterydata: qcom,battery-data {
+	 cityman_batterydata: qcom,battery-data {
 		 qcom,batt-id-range-pct = <15>;
 		 #include "microsoft_bvt5e_3000mah.dtsi"
 	 };
  };
  
  &pmi8994_charger {
-	 qcom,battery-data = <&talkman_batterydata>;
+	 qcom,battery-data = <&cityman_batterydata>;
  };
  
  &cnss {

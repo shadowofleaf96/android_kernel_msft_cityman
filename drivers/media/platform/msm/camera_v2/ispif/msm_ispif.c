@@ -572,8 +572,8 @@ static int msm_ispif_config(struct ispif_device *ispif,
 
     msm_ispif_sel_csid_core(ispif, intftype, params->entries[i].csid, vfe_intf);
     cid_mask = msm_ispif_get_cids_mask_from_cfg(&params->entries[i]);
-    if (intftype >= RDI0)
-      pr_err("%s: cid_mask %x\n", __func__, cid_mask);
+    pr_err("%s: intftype %d vfe_intf %d csid %d cid_mask 0x%x\n",
+           __func__, intftype, vfe_intf, params->entries[i].csid, cid_mask);
 
     msm_ispif_enable_intf_cids(ispif, intftype, cid_mask, vfe_intf, 1);
     if (params->entries[i].crop_enable)

@@ -727,7 +727,22 @@ int32_t msm_sensor_driver_probe(void *setting,
     CDBG("mount %d", slave_info->sensor_init_params.sensor_mount_angle);
   }
 
-  /* Validate camera id */
+  /* Validate camera id and fallback to sensor_name match if needed */
+  pr_err("HACK_DEBUG: requested camera_id %d, sensor_name '%s'\n", slave_info->camera_id, slave_info->sensor_name);
+  if (slave_info->camera_id >= MAX_CAMERAS || !g_sctrl[slave_info->camera_id]) {
+    int i;
+    for (i = 0; i < MAX_CAMERAS; i++) {
+      if (g_sctrl[i] && g_sctrl[i]->sensordata && g_sctrl[i]->sensordata->sensor_name) {
+        pr_err("HACK_DEBUG: g_sctrl[%d] sensor_name '%s'\n", i, g_sctrl[i]->sensordata->sensor_name);
+        if (!strcmp(g_sctrl[i]->sensordata->sensor_name, slave_info->sensor_name)) {
+          pr_err("HACK: remapped %s from camera_id %d to %d\n", slave_info->sensor_name, slave_info->camera_id, i);
+          slave_info->camera_id = i;
+          break;
+        }
+      }
+    }
+  }
+
   if (slave_info->camera_id >= MAX_CAMERAS) {
     pr_err("failed: invalid camera id %d max %d", slave_info->camera_id,
            MAX_CAMERAS);

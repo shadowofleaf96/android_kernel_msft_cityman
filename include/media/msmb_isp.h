@@ -176,7 +176,6 @@ struct msm_vfe_camif_cfg {
 	uint32_t last_line;
 	uint32_t epoch_line0;
 	uint32_t epoch_line1;
-	uint32_t hbi_cnt;
 	enum msm_vfe_camif_input camif_input;
 	struct msm_vfe_camif_subsample_cfg subsample_cfg;
 };
@@ -287,7 +286,7 @@ enum msm_vfe_axi_stream_cmd {
 
 struct msm_vfe_axi_stream_cfg_cmd {
 	uint8_t num_streams;
-	uint32_t stream_handle[MAX_NUM_STREAM];
+	uint32_t stream_handle[VFE_AXI_SRC_MAX];
 	enum msm_vfe_axi_stream_cmd cmd;
 };
 

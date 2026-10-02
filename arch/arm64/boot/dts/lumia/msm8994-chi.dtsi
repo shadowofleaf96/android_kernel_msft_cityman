@@ -19,7 +19,6 @@
  #include "common/sdhc.dtsi"
  #include "common/haptics.dtsi"
  #include "common/touch.dtsi"
- #include "common/silabs.dtsi"
  #include "common/sidekeys.dtsi"
  #include "common/audio.dtsi"
  #include "common/adc.dtsi"
@@ -94,15 +93,6 @@
  
  #include "common/regulator.dtsi"
  
- &i2c_5 {
-	 smb1357-charger@1c {
-		 compatible = "qcom,smb1357-charger";
-		 reg = <0x1c>;
-		 qcom,parallel-charger;
-		 qcom,float-voltage-mv = <4400>;
-		 qcom,recharge-thresh-mv = <100>;
-	 };
- };
  
  &mdss_mdp {
 	 qcom,mdss-pref-prim-intf = "dsi";
@@ -298,22 +288,22 @@
  };
  
  &usb3 {
-         status = "ok";
-         qcom,usbin-vadc = <&pmi8994_vadc>;
-         qcom,internal-chg-detect;
- 
-         dwc3@f9200000 {
-                 maximum-speed = "high-speed";
-                 no-set-vbus-power;
-         };
- };
- 
- &hsphy0 {
-         status = "ok";
-         qcom,hsphy-init-host = <0x00D191A4>;
-         qcom,hsphy-init = <0x00D1D9A4>;
-         qcom,charger = <&pmi8994_charger>;
- };
+        status = "ok";
+        qcom,usbin-vadc = <&pmi8994_vadc>;
+        qcom,internal-chg-detect;
+
+        dwc3@f9200000 {
+                maximum-speed = "high-speed";
+                no-set-vbus-power;
+        };
+};
+
+&hsphy0 {
+        status = "ok";
+        qcom,hsphy-init-host = <0x00D191A4>;
+        qcom,hsphy-init = <0x00D1D9A4>;
+        qcom,charger = <&pmi8994_charger>;
+};
  
  &ssphy0 {
          status = "ok";
@@ -379,10 +369,10 @@
  };
  
  &qusb_phy {
-	 status = "ok";
+	 status = "disabled";
  };
 
-&pcie1 {
+ &pcie1 {
 	status = "ok";
 	/delete-property/ qcom,l1-supported;
 	/delete-property/ qcom,l1ss-supported;

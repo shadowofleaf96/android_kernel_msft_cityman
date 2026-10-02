@@ -435,25 +435,54 @@ static long msm_buf_mngr_subdev_ioctl(struct v4l2_subdev *sd,
 }
 
 #ifdef CONFIG_COMPAT
+struct msm_buf_mngr_info32_legacy {
+	uint32_t session_id;
+	uint32_t stream_id;
+	uint32_t frame_id;
+	struct compat_timeval timestamp;
+	uint32_t index;
+	uint32_t reserved;
+	enum msm_camera_buf_mngr_buf_type type;
+	struct msm_camera_user_buf_cont_t user_buf;
+};
+
+#define VIDIOC_MSM_BUF_MNGR_GET_BUF32_LEGACY \
+	_IOWR('V', BASE_VIDIOC_PRIVATE + 33, struct msm_buf_mngr_info32_legacy)
+#define VIDIOC_MSM_BUF_MNGR_PUT_BUF32_LEGACY \
+	_IOWR('V', BASE_VIDIOC_PRIVATE + 34, struct msm_buf_mngr_info32_legacy)
+#define VIDIOC_MSM_BUF_MNGR_BUF_DONE32_LEGACY \
+	_IOWR('V', BASE_VIDIOC_PRIVATE + 35, struct msm_buf_mngr_info32_legacy)
+
 static long msm_bmgr_subdev_fops_compat_ioctl(struct file *file,
 		unsigned int cmd, unsigned long arg)
 {
 	struct video_device *vdev = video_devdata(file);
 	struct v4l2_subdev *sd = vdev_to_v4l2_subdev(vdev);
 	int32_t rc = 0;
-
 	void __user *up = (void __user *)arg;
+	bool is_legacy = false;
 
-	/* Convert 32 bit IOCTL ID's to 64 bit IOCTL ID's
-	 * except VIDIOC_MSM_CPP_CFG32, which needs special
-	 * processing
-	 */
+	BUILD_BUG_ON(sizeof(struct msm_buf_mngr_info32_legacy) != 100);
+
+	/* Convert 32 bit IOCTL ID's to 64 bit IOCTL ID's */
 	switch (cmd) {
+	case VIDIOC_MSM_BUF_MNGR_GET_BUF32_LEGACY:
+		is_legacy = true;
+		cmd = VIDIOC_MSM_BUF_MNGR_GET_BUF;
+		break;
 	case VIDIOC_MSM_BUF_MNGR_GET_BUF32:
 		cmd = VIDIOC_MSM_BUF_MNGR_GET_BUF;
 		break;
+	case VIDIOC_MSM_BUF_MNGR_BUF_DONE32_LEGACY:
+		is_legacy = true;
+		cmd = VIDIOC_MSM_BUF_MNGR_BUF_DONE;
+		break;
 	case VIDIOC_MSM_BUF_MNGR_BUF_DONE32:
 		cmd = VIDIOC_MSM_BUF_MNGR_BUF_DONE;
+		break;
+	case VIDIOC_MSM_BUF_MNGR_PUT_BUF32_LEGACY:
+		is_legacy = true;
+		cmd = VIDIOC_MSM_BUF_MNGR_PUT_BUF;
 		break;
 	case VIDIOC_MSM_BUF_MNGR_PUT_BUF32:
 		cmd = VIDIOC_MSM_BUF_MNGR_PUT_BUF;
@@ -470,47 +499,81 @@ static long msm_bmgr_subdev_fops_compat_ioctl(struct file *file,
 	case VIDIOC_MSM_BUF_MNGR_GET_BUF:
 	case VIDIOC_MSM_BUF_MNGR_BUF_DONE:
 	case VIDIOC_MSM_BUF_MNGR_PUT_BUF: {
-		struct msm_buf_mngr_info32_t buf_info32;
 		struct msm_buf_mngr_info buf_info;
+		memset(&buf_info, 0, sizeof(buf_info));
 
-		if (copy_from_user(&buf_info32, (void __user *)up,
-					sizeof(struct msm_buf_mngr_info32_t)))
-			return -EFAULT;
+		if (is_legacy) {
+			struct msm_buf_mngr_info32_legacy buf_legacy;
+			if (copy_from_user(&buf_legacy, up, sizeof(buf_legacy)))
+				return -EFAULT;
 
-		buf_info.session_id = buf_info32.session_id;
-		buf_info.stream_id = buf_info32.stream_id;
-		buf_info.frame_id = buf_info32.frame_id;
-		buf_info.index = buf_info32.index;
-		buf_info.timestamp.tv_sec = (long) buf_info32.timestamp.tv_sec;
-		buf_info.timestamp.tv_usec = (long) buf_info32.
-						timestamp.tv_usec;
-		buf_info.reserved = buf_info32.reserved;
-		buf_info.type = buf_info32.type;
+			buf_info.session_id = buf_legacy.session_id;
+			buf_info.stream_id = buf_legacy.stream_id;
+			buf_info.frame_id = buf_legacy.frame_id;
+			buf_info.flags = 0;
+			buf_info.timestamp.tv_sec = (long)buf_legacy.timestamp.tv_sec;
+			buf_info.timestamp.tv_usec = (long)buf_legacy.timestamp.tv_usec;
+			buf_info.index = buf_legacy.index;
+			buf_info.reserved = buf_legacy.reserved;
+			buf_info.type = buf_legacy.type;
+			buf_info.user_buf = buf_legacy.user_buf;
 
-		rc = v4l2_subdev_call(sd, core, ioctl, cmd, &buf_info);
-		if (rc < 0) {
-			pr_err_ratelimited("Subdev cmd 0x%x fail\n", cmd);
-			return rc;
-		}
+			rc = v4l2_subdev_call(sd, core, ioctl, cmd, &buf_info);
+			if (rc < 0) {
+				pr_err_ratelimited("Subdev cmd 0x%x fail\n", cmd);
+				return rc;
+			}
 
-		buf_info32.session_id = buf_info.session_id;
-		buf_info32.stream_id = buf_info.stream_id;
-		buf_info32.index = buf_info.index;
-		buf_info32.timestamp.tv_sec = (int32_t) buf_info.
-							timestamp.tv_sec;
-		buf_info32.timestamp.tv_usec = (int32_t) buf_info.timestamp.
-							tv_usec;
-		buf_info32.reserved = buf_info.reserved;
-		buf_info32.type = buf_info.type;
-		buf_info32.user_buf.buf_cnt = buf_info.user_buf.buf_cnt;
-		memcpy(&buf_info32.user_buf.buf_idx,
-			&buf_info.user_buf.buf_idx,
-			sizeof(buf_info.user_buf.buf_idx));
-		if (copy_to_user((void __user *)up, &buf_info32,
-				sizeof(struct msm_buf_mngr_info32_t)))
-			return -EFAULT;
+			buf_legacy.session_id = buf_info.session_id;
+			buf_legacy.stream_id = buf_info.stream_id;
+			buf_legacy.frame_id = buf_info.frame_id;
+			buf_legacy.timestamp.tv_sec = (compat_time_t)buf_info.timestamp.tv_sec;
+			buf_legacy.timestamp.tv_usec = (int32_t)buf_info.timestamp.tv_usec;
+			buf_legacy.index = buf_info.index;
+			buf_legacy.reserved = buf_info.reserved;
+			buf_legacy.type = buf_info.type;
+			buf_legacy.user_buf = buf_info.user_buf;
+
+			if (copy_to_user(up, &buf_legacy, sizeof(buf_legacy)))
+				return -EFAULT;
+		} else {
+			struct msm_buf_mngr_info32_t buf_info32;
+			if (copy_from_user(&buf_info32, up, sizeof(buf_info32)))
+				return -EFAULT;
+
+			buf_info.session_id = buf_info32.session_id;
+			buf_info.stream_id = buf_info32.stream_id;
+			buf_info.frame_id = buf_info32.frame_id;
+			buf_info.flags = buf_info32.flags;
+			buf_info.timestamp.tv_sec = (long)buf_info32.timestamp.tv_sec;
+			buf_info.timestamp.tv_usec = (long)buf_info32.timestamp.tv_usec;
+			buf_info.index = buf_info32.index;
+			buf_info.reserved = buf_info32.reserved;
+			buf_info.type = buf_info32.type;
+			buf_info.user_buf = buf_info32.user_buf;
+
+			rc = v4l2_subdev_call(sd, core, ioctl, cmd, &buf_info);
+			if (rc < 0) {
+				pr_err_ratelimited("Subdev cmd 0x%x fail\n", cmd);
+				return rc;
+			}
+
+			buf_info32.session_id = buf_info.session_id;
+			buf_info32.stream_id = buf_info.stream_id;
+			buf_info32.frame_id = buf_info.frame_id;
+			buf_info32.flags = buf_info.flags;
+			buf_info32.timestamp.tv_sec = (compat_time_t)buf_info.timestamp.tv_sec;
+			buf_info32.timestamp.tv_usec = (int32_t)buf_info.timestamp.tv_usec;
+			buf_info32.index = buf_info.index;
+			buf_info32.reserved = buf_info.reserved;
+			buf_info32.type = buf_info.type;
+			buf_info32.user_buf = buf_info.user_buf;
+
+			if (copy_to_user(up, &buf_info32, sizeof(buf_info32)))
+				return -EFAULT;
 		}
 		break;
+	}
 	case VIDIOC_MSM_BUF_MNGR_CONT_CMD: {
 		struct msm_buf_mngr_main_cont_info cont_cmd;
 		if (copy_from_user(&cont_cmd, (void __user *)up,
@@ -526,10 +589,7 @@ static long msm_bmgr_subdev_fops_compat_ioctl(struct file *file,
 	default:
 		pr_err_ratelimited("unsupported compat type 0x%x\n", cmd);
 		return -ENOIOCTLCMD;
-		break;
 	}
-
-
 
 	return 0;
 }

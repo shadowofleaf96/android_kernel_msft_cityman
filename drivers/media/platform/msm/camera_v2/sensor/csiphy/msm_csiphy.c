@@ -34,11 +34,33 @@ static int cityman_settle = 0x23;
 module_param_named(settle, cityman_settle, int, 0644);
 MODULE_PARM_DESC(settle, "CSIPHY settle_cnt; -1 = leave HAL value");
 
+/* 0 = CAF defaults. 1 = WP live Hill overrides: CFG3=0x16, CFG4=0xff, CFG5=0x22, CFG2=0x3f. */
+static int cityman_wp_analog = 0;
+module_param_named(wp_analog, cityman_wp_analog, int, 0644);
+MODULE_PARM_DESC(wp_analog, "CSIPHY 20nm WP analog overrides (CFG3=0x16 CFG4=0xff CFG5=0x22)");
+
 /* 20nm lnn_misc1 lane-id uses 0x4 (clk) / 0x8|n (data). Bit 0 is unused.
  * OR 1 on every enabled lane = try P/N invert. echo 0 to disable. */
 static int cityman_pn_invert = 0;
 module_param_named(pn_invert, cityman_pn_invert, int, 0644);
+
+static int cityman_clk_mux = -1;
+module_param_named(clk_mux, cityman_clk_mux, int, 0644);
 MODULE_PARM_DESC(pn_invert, "OR 1 into CSIPHY 20nm lnn_misc1 (P/N invert)");
+
+/* Lumia 950 XL: 4 data lanes on Pins 0, 2, 3, 4 and Clock on Pin 1.
+ * Mask 0x1F = pins 0, 1, 2, 3, 4. */
+static int cityman_lane_cnt = 4;
+module_param_named(lane_cnt, cityman_lane_cnt, int, 0644);
+MODULE_PARM_DESC(lane_cnt, "CSIPHY lane_cnt override; -1 = DT/HAL");
+
+static int cityman_lane_mask = 0x1f;
+module_param_named(lane_mask, cityman_lane_mask, int, 0644);
+MODULE_PARM_DESC(lane_mask, "CSIPHY lane_mask override; -1 = DT/HAL");
+
+static int cityman_clk_lane = 1;
+module_param_named(clk_lane, cityman_clk_lane, int, 0644);
+MODULE_PARM_DESC(clk_lane, "CSIPHY physical clock lane index");
 
 static struct csiphy_device *cityman_late_csiphy;
 static void cityman_csiphy_late_fn(struct work_struct *w);
@@ -114,6 +136,14 @@ msm_csiphy_lane_config(struct csiphy_device *csiphy_dev,
   if (!csiphybase) {
     pr_err("%s: csiphybase NULL\n", __func__);
     return -EINVAL;
+  }
+
+  if (cityman_lane_mask >= 0) {
+    csiphy_dev->lane_mask[csiphy_id] = cityman_lane_mask;
+    csiphy_params->lane_mask = cityman_lane_mask;
+  }
+  if (cityman_lane_cnt > 0) {
+    csiphy_params->lane_cnt = cityman_lane_cnt;
   }
 
   csiphy_dev->lane_mask[csiphy_id] |= csiphy_params->lane_mask;
@@ -213,9 +243,15 @@ msm_csiphy_lane_config(struct csiphy_device *csiphy_dev,
         (csiphy_params->lane_mask & 0x18) == 0x18) {
       val &= ~0xf0;
       val |= csiphy_params->csid_core << 4;
+      val &= ~0xf;
+      val |= csiphy_params->csid_core;
     } else {
       val &= ~0xf;
       val |= csiphy_params->csid_core;
+    }
+    if (cityman_clk_mux != -1) {
+      val &= ~0xf;
+      val |= (cityman_clk_mux & 0xf);
     }
     msm_camera_io_w(val, csiphy_dev->clk_mux_base);
     CDBG("%s clk mux addr %pK val 0x%x\n", __func__, csiphy_dev->clk_mux_base,
@@ -280,17 +316,21 @@ msm_csiphy_lane_config(struct csiphy_device *csiphy_dev,
         csiphybase +
             csiphy_dev->ctrl_reg->csiphy_reg.mipi_csiphy_lnn_cfg3_addr +
             0x40 * j);
-    /* WP live Hill CFG3=0x16 (Linux settle 0x23). */
-    msm_camera_io_w(
-        0x16, csiphybase +
-                  csiphy_dev->ctrl_reg->csiphy_reg.mipi_csiphy_lnn_cfg3_addr +
-                  0x40 * j);
-    pr_err("cityman_csiphy wp cfg3 j=%d settle=0x%x now=0x%x\n", j,
-           csiphy_params->settle_cnt,
-           msm_camera_io_r(
-               csiphybase +
-               csiphy_dev->ctrl_reg->csiphy_reg.mipi_csiphy_lnn_cfg3_addr +
-               0x40 * j));
+    if (cityman_wp_analog) {
+      /* WP live Hill CFG3=0x16 (Linux settle 0x23). */
+      /* Commenting out to allow the HAL's settle_cnt to take effect
+      msm_camera_io_w(
+          0x16, csiphybase +
+                    csiphy_dev->ctrl_reg->csiphy_reg.mipi_csiphy_lnn_cfg3_addr +
+                    0x40 * j);
+      */
+      pr_err("cityman_csiphy wp cfg3 j=%d settle=0x%x now=0x%x\n", j,
+             csiphy_params->settle_cnt,
+             msm_camera_io_r(
+                 csiphybase +
+                 csiphy_dev->ctrl_reg->csiphy_reg.mipi_csiphy_lnn_cfg3_addr +
+                 0x40 * j));
+    }
     msm_camera_io_w(
         csiphy_dev->ctrl_reg->csiphy_reg.mipi_csiphy_interrupt_mask_val,
         csiphybase +
@@ -312,6 +352,8 @@ msm_csiphy_lane_config(struct csiphy_device *csiphy_dev,
         lane_val = lane_right | num_lanes;
       } else if (j == 1) {
         lane_val = 0x4;
+      } else {
+        lane_val = 0x0;
       }
       if (csiphy_params->combo_mode == 1) {
         /*
@@ -351,7 +393,7 @@ msm_csiphy_lane_config(struct csiphy_device *csiphy_dev,
                    csiphy_dev->ctrl_reg->csiphy_reg.mipi_csiphy_lnn_cfg4_addr +
                    0x40 * j);
       }
-      {
+      if (cityman_wp_analog) {
         uint32_t c4 = msm_camera_io_r(
             csiphybase +
             csiphy_dev->ctrl_reg->csiphy_reg.mipi_csiphy_lnn_cfg4_addr +
@@ -563,6 +605,11 @@ static int msm_csiphy_init(struct csiphy_device *csiphy_dev) {
       rc = -ENOMEM;
       return rc;
     }
+#undef r
+#define g(off) msm_camera_io_r(csiphybase + (off))
+    pr_err("cityman_csiphy dump glbl 140=0x%x 144=0x%x 148=0x%x 14c=0x%x 150=0x%x 154=0x%x 158=0x%x 15c=0x%x 160=0x%x 164=0x%x 168=0x%x\n",
+           g(0x140), g(0x144), g(0x148), g(0x14C), g(0x150), g(0x154), g(0x158), g(0x15C), g(0x160), g(0x164), g(0x168));
+#undef g
 
     CDBG("%s:%d called\n", __func__, __LINE__);
     rc = msm_cam_clk_enable(&csiphy_dev->pdev->dev, csiphy_clk_info,
@@ -748,6 +795,8 @@ static int msm_csiphy_release(struct csiphy_device *csiphy_dev, void *arg) {
   uint16_t csi_lane_mask;
   csi_lane_params = (struct msm_camera_csi_lane_params *)arg;
 
+  cancel_delayed_work_sync(&cityman_csiphy_late);
+
   if (!csiphy_dev || !csiphy_dev->ref_count) {
     pr_err("%s csiphy dev NULL / ref_count ZERO\n", __func__);
     return 0;
@@ -849,6 +898,8 @@ static int msm_csiphy_release(struct csiphy_device *csiphy_dev, void *arg) {
   struct msm_camera_csi_lane_params *csi_lane_params;
   uint16_t csi_lane_mask;
   csi_lane_params = (struct msm_camera_csi_lane_params *)arg;
+
+  cancel_delayed_work_sync(&cityman_csiphy_late);
 
   if (!csiphy_dev || !csiphy_dev->ref_count) {
     pr_err("%s csiphy dev NULL / ref_count ZERO\n", __func__);

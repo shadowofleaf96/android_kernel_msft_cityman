@@ -209,6 +209,26 @@ static int32_t msm_sensor_get_dt_data(struct device_node *of_node,
     goto FREE_VREG;
   }
 
+  rc = msm_camera_fill_vreg_params(
+      sensordata->power_info.cam_vreg,
+      sensordata->power_info.num_vreg,
+      sensordata->power_info.power_setting,
+      sensordata->power_info.power_setting_size);
+  if (rc < 0) {
+    pr_err("%s failed fill_vreg_params power_setting %d\n", __func__, rc);
+    goto FREE_PS;
+  }
+
+  rc = msm_camera_fill_vreg_params(
+      sensordata->power_info.cam_vreg,
+      sensordata->power_info.num_vreg,
+      sensordata->power_info.power_down_setting,
+      sensordata->power_info.power_down_setting_size);
+  if (rc < 0) {
+    pr_err("%s failed fill_vreg_params power_down_setting %d\n", __func__, rc);
+    goto FREE_PS;
+  }
+
   sensordata->power_info.gpio_conf =
       kzalloc(sizeof(struct msm_camera_gpio_conf), GFP_KERNEL);
   if (!sensordata->power_info.gpio_conf) {
@@ -762,6 +782,10 @@ int msm_sensor_config32(struct msm_sensor_ctrl_t *s_ctrl, void __user *argp) {
     rc = s_ctrl->sensor_i2c_client->i2c_func_tbl->i2c_read(
         s_ctrl->sensor_i2c_client, read_config.reg_addr, &local_data,
         read_config.data_type);
+    if (s_ctrl->sensor_i2c_client->cci_client)
+      s_ctrl->sensor_i2c_client->cci_client->sid = orig_slave_addr;
+    else if (s_ctrl->sensor_i2c_client->client)
+      s_ctrl->sensor_i2c_client->client->addr = orig_slave_addr;
     if (rc < 0) {
       pr_err("%s:%d: i2c_read failed\n", __func__, __LINE__);
       break;
@@ -1058,6 +1082,10 @@ int msm_sensor_config(struct msm_sensor_ctrl_t *s_ctrl, void __user *argp) {
     rc = s_ctrl->sensor_i2c_client->i2c_func_tbl->i2c_read(
         s_ctrl->sensor_i2c_client, read_config.reg_addr, &local_data,
         read_config.data_type);
+    if (s_ctrl->sensor_i2c_client->cci_client)
+      s_ctrl->sensor_i2c_client->cci_client->sid = orig_slave_addr;
+    else if (s_ctrl->sensor_i2c_client->client)
+      s_ctrl->sensor_i2c_client->client->addr = orig_slave_addr;
     if (rc < 0) {
       pr_err("%s:%d: i2c_read failed\n", __func__, __LINE__);
       break;

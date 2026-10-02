@@ -55,34 +55,24 @@
 		qcom,cam-vreg-max-voltage = <1150000 2850000 2850000>;
 		qcom,cam-vreg-op-mode = <100000 100000 100000>;
 		qcom,gpio-no-mux = <0>;
-		/* 0x4320: DL={0,2,3,4}, clock=phy1. #48 0x3210 stole the clock
-		 * pin (pkts=0, irq 0xd000dd). Kernel may override to 0x0234. */
-		qcom,csi-lane-assign = <0x4320>;
+		/* 0x0423: Lumia 950 XL motherboard trace routing (DL0..DL3 to CSI0 LN2/LN1/LN3/LN0). */
+		qcom,csi-lane-assign = <0x0423>;
 		qcom,csi-lane-mask = <0x1F>;
 		pinctrl-names = "cam_default", "cam_suspend";
-		/* Core auto-applies only "default". Ident selects cam_default
-		 * (GPIO 13 func 1 = MCLK). #13 left gp-13 unclaimed. */
-		pinctrl-0 = <&cam_sensor_mclk0_active &cam_sensor_rear_active>;
-		pinctrl-1 = <&cam_sensor_mclk0_suspend &cam_sensor_rear_suspend>;
-		gpios = <&msm_gpio 13 0>,
-			<&msm_gpio 92 0>,
-			<&msm_gpio 91 0>;
-		qcom,gpio-reset = <1>;
-		qcom,gpio-standby = <2>;
-		qcom,gpio-req-tbl-num = <0 1 2>;
-		qcom,gpio-req-tbl-flags = <1 0 0>;
-		qcom,gpio-req-tbl-label = "CAMIF_MCLK0",
-					  "CAM_RESET0",
-					  "CAM_STANDBY0";
-		/* ACPI CAMSENSOR_1_STANBY (no _N): 0 = out of standby. */
-		qcom,standby-release = <0>;
+		/* GPIO 13 func 1 = MCLK0. Rear XSHUTDOWN is not on GPIO 91/92. */
+		pinctrl-0 = <&cam_sensor_mclk0_active>;
+		pinctrl-1 = <&cam_sensor_mclk0_suspend>;
+		gpios = <&msm_gpio 13 0>;
+		qcom,gpio-req-tbl-num = <0>;
+		qcom,gpio-req-tbl-flags = <1>;
+		qcom,gpio-req-tbl-label = "CAMIF_MCLK0";
 		clocks = <&clock_mmss clk_mclk0_clk_src>,
 			 <&clock_mmss clk_camss_mclk0_clk>;
 		clock-names = "cam_src_clk", "cam_clk";
 		status = "ok";
 	};
 
-	/* Front 5MP (Ducati) — disabled this flash (snaccy: Hill first). */
+	/* Front 5MP (Ducati) — CCI master 0, CSI2, 8-bit 0x20 */
 	cam1: cam1@1 {
 		compatible = "qcom,smia65pp";
 		cell-index = <1>;
@@ -98,21 +88,22 @@
 		cam_vana-supply = <&pm8994_l17>;
 		cam_vio-supply = <&pm8994_lvs1>;
 		pinctrl-names = "cam_default", "cam_suspend";
-		pinctrl-0 = <&cam_sensor_mclk2_active &cam_sensor_front_active>;
-		pinctrl-1 = <&cam_sensor_mclk2_suspend &cam_sensor_front_suspend>;
+		pinctrl-0 = <&cam_sensor_mclk2_active &cam_sensor_front_rst_active>;
+		pinctrl-1 = <&cam_sensor_mclk2_suspend &cam_sensor_front_rst_suspend>;
 		gpios = <&msm_gpio 15 0>,
-			<&msm_gpio 104 0>,
-			<&msm_gpio 105 0>;
+			<&msm_gpio 104 0>;
 		qcom,gpio-reset = <1>;
-		qcom,gpio-standby = <2>;
-		qcom,standby-release = <1>;
+		qcom,gpio-req-tbl-num = <0 1>;
+		qcom,gpio-req-tbl-flags = <1 0>;
+		qcom,gpio-req-tbl-label = "CAMIF_MCLK2",
+					  "CAM_FRONT_RES_N";
 		clocks = <&clock_mmss clk_mclk2_clk_src>,
 			 <&clock_mmss clk_camss_mclk2_clk>;
 		clock-names = "cam_src_clk", "cam_clk";
 		status = "disabled";
 	};
 
-	/* Iris — disabled this flash. 8-bit 0x6C from snaccy, not live-dumped. */
+	/* Iris / SIIRI — CCI master 0, CSI3, 8-bit 0x6C */
 	cam2: cam2@2 {
 		compatible = "qcom,smia65pp";
 		cell-index = <2>;
@@ -129,14 +120,15 @@
 		cam_vana-supply = <&pm8994_l17>;
 		cam_vio-supply = <&pm8994_lvs1>;
 		pinctrl-names = "cam_default", "cam_suspend";
-		pinctrl-0 = <&cam_sensor_mclk1_active>;
-		pinctrl-1 = <&cam_sensor_mclk1_suspend>;
+		pinctrl-0 = <&cam_sensor_mclk1_active &cam_sensor_iris_active>;
+		pinctrl-1 = <&cam_sensor_mclk1_suspend &cam_sensor_iris_suspend>;
 		gpios = <&msm_gpio 14 0>,
-			<&msm_gpio 102 0>,
-			<&msm_gpio 106 0>;
+			<&msm_gpio 102 0>;
 		qcom,gpio-reset = <1>;
-		qcom,gpio-standby = <2>;
-		qcom,standby-release = <0>;
+		qcom,gpio-req-tbl-num = <0 1>;
+		qcom,gpio-req-tbl-flags = <1 0>;
+		qcom,gpio-req-tbl-label = "CAMIF_MCLK1",
+					  "IRIS_CAM_RES_N";
 		clocks = <&clock_mmss clk_mclk1_clk_src>,
 			 <&clock_mmss clk_camss_mclk1_clk>;
 		clock-names = "cam_src_clk", "cam_clk";

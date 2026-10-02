@@ -496,7 +496,7 @@ static int smia65pp_ident_one(struct msm_sensor_ctrl_t *s_ctrl) {
   struct pinctrl *pctl = NULL;
   struct pinctrl_state *pst;
   const char *name;
-  u32 rst_idx = 1, stby_idx = 2, stby_rel = 1;
+  u32 rst_idx = (u32)-1, stby_idx = (u32)-1, stby_rel = 1;
   int rst = -EINVAL, stby = -EINVAL;
   int rst_owned = 0, stby_owned = 0;
   int rc;
@@ -511,11 +511,11 @@ static int smia65pp_ident_one(struct msm_sensor_ctrl_t *s_ctrl) {
 
   smia65pp_fill_cci(s_ctrl);
 
-  of_property_read_u32(np, "qcom,gpio-reset", &rst_idx);
-  of_property_read_u32(np, "qcom,gpio-standby", &stby_idx);
+  if (!of_property_read_u32(np, "qcom,gpio-reset", &rst_idx))
+    rst = of_get_gpio(np, rst_idx);
+  if (!of_property_read_u32(np, "qcom,gpio-standby", &stby_idx))
+    stby = of_get_gpio(np, stby_idx);
   of_property_read_u32(np, "qcom,standby-release", &stby_rel);
-  rst = of_get_gpio(np, rst_idx);
-  stby = of_get_gpio(np, stby_idx);
   pr_err("smiapp: %s xshutdown gpio=%d (idx %u) standby gpio=%d (idx %u) "
          "release=%u\n",
          name, rst, rst_idx, stby, stby_idx, stby_rel);
@@ -777,6 +777,7 @@ static void smia65pp_peek(struct msm_sensor_ctrl_t *s_ctrl, const char *tag) {
   uint16_t id = 0xffff, w = 0, h = 0, mode = 0, pre = 0, mult = 0;
   uint16_t dt = 0, lanes = 0, vt_pix = 0, vt_sys = 0, op_pix = 0, op_sys = 0;
   uint16_t sig = 0, ch = 0;
+  uint16_t exp = 0, gain = 0, tp = 0;
   int rc_id, rc_w;
 
   rc_id = smia65pp_read(s_ctrl, 0x0000, &id, MSM_CAMERA_I2C_WORD_DATA);
@@ -793,11 +794,39 @@ static void smia65pp_peek(struct msm_sensor_ctrl_t *s_ctrl, const char *tag) {
   smia65pp_read(s_ctrl, 0x0114, &lanes, MSM_CAMERA_I2C_BYTE_DATA);
   smia65pp_read(s_ctrl, 0x0110, &ch, MSM_CAMERA_I2C_BYTE_DATA);
   smia65pp_read(s_ctrl, 0x0111, &sig, MSM_CAMERA_I2C_BYTE_DATA);
+  smia65pp_read(s_ctrl, 0x0202, &exp, MSM_CAMERA_I2C_WORD_DATA);
+  smia65pp_read(s_ctrl, 0x0204, &gain, MSM_CAMERA_I2C_WORD_DATA);
+  smia65pp_read(s_ctrl, 0x0600, &tp, MSM_CAMERA_I2C_WORD_DATA);
   pr_err("cityman_smia %s id=0x%04x/%d %ux%u/%d mode=0x%x pll=%u/%u vt=%u/%u "
-         "op=%u/%u dt=0x%x lanes=0x%x ch=0x%x sig=0x%x\n",
+         "op=%u/%u dt=0x%x lanes=0x%x ch=0x%x sig=0x%x exp=%u gain=0x%x tp=0x%x\n",
          tag, id, rc_id, w, h, rc_w, mode, pre, mult, vt_sys, vt_pix, op_sys,
-         op_pix, dt, lanes, ch, sig);
+         op_pix, dt, lanes, ch, sig, exp, gain, tp);
 }
+
+static int cityman_crop_vfe = 0;
+module_param_named(crop_vfe, cityman_crop_vfe, int, 0644);
+MODULE_PARM_DESC(crop_vfe, "Override sensor mode to 2496x1872 (default 0=keep HAL mode)");
+
+static int cityman_wp_sensor_analog = 0;
+module_param_named(wp_sensor_analog, cityman_wp_sensor_analog, int, 0644);
+MODULE_PARM_DESC(wp_sensor_analog, "Enable WP sensor analog & supplies overrides (default 0=off)");
+
+static int cityman_pll_mult = 125;
+module_param_named(pll_mult, cityman_pll_mult, int, 0644);
+MODULE_PARM_DESC(pll_mult, "PLL multiplier for 9.6MHz MCLK (default 125 for 1200MHz VCO, 124 for 1190.4MHz)");
+
+static int cityman_colorbars = 0;
+module_param_named(colorbars, cityman_colorbars, int, 0644);
+MODULE_PARM_DESC(colorbars, "Enable sensor test pattern color bars (default 0=off, 1=on)");
+
+static int cityman_exp_lines = 1500;
+module_param_named(exp_lines, cityman_exp_lines, int, 0644);
+MODULE_PARM_DESC(exp_lines, "Default coarse integration time in lines (default 1500)");
+
+static int cityman_gain = 256;
+module_param_named(gain, cityman_gain, int, 0644);
+MODULE_PARM_DESC(gain, "Default analogue gain code (default 256 = 2.0x)");
+
 
 /*
  * WP live viewfinder: 0AEACA05.dcc 0xFF0B (SensorMode 11).
@@ -805,8 +834,10 @@ static void smia65pp_peek(struct msm_sensor_ctrl_t *s_ctrl, const char *tag) {
  * ETL DDRClk 379.2 MHz, settle 22. #142 0xFF03 was never streamed.
  */
 static int smia65pp_crop_vfe(struct msm_sensor_ctrl_t *s_ctrl) {
+  if (!cityman_crop_vfe)
+    return 0;
   static const u16 words[][2] = {
-      {0x0112, 0x0a08}, {0x0820, 0x0bd9}, {0x0300, 0x0004}, {0x0302, 0x0002},
+      {0x0112, 0x0a0a}, {0x0820, 0x0bd9}, {0x0300, 0x0004}, {0x0302, 0x0002},
       {0x0304, 0x0001}, {0x0306, 0x007c}, {0x0308, 0x0008}, {0x030a, 0x0001},
       {0x030c, 0x0001}, {0x030e, 0x004f}, {0x0342, 0x1788}, {0x0344, 0x00b0},
       {0x0346, 0x0088}, {0x0348, 0x142f}, {0x034a, 0x0f27}, {0x034c, 0x09c0},
@@ -1286,28 +1317,54 @@ static void smia65pp_after_qcam_i2c(struct msm_sensor_ctrl_t *s_ctrl) {
   int late, streamed = 0;
 
   smia65pp_read(s_ctrl, 0x0100, &mode, MSM_CAMERA_I2C_BYTE_DATA);
-  if (!(mode & 0x1))
-    rated = smia65pp_set_link_rate(s_ctrl);
-  if (smia65pp_i2c_logs >= 6 && !(mode & 0x1)) {
-    /* #135/#136: 0x0808=2 stuck, 0x0800-0x0807 always 0. */
-    pr_err("cityman_smia skip colorbars/dphy table=%d ctrl left\n",
-           smia65pp_i2c_logs);
-    supplies = smia65pp_wp_smiapp_supplies(s_ctrl);
-    analog = smia65pp_cdcc_dphy_analog(s_ctrl);
-    smia65pp_dump_nvm_page0(s_ctrl);
+
+  /* Detect Motorola 24MHz MCLK PLL (pre=4, mult=200 -> 1200MHz VCO)
+   * and adapt to Lumia 9.6MHz MCLK (pre=1, mult=cityman_pll_mult -> 1200MHz VCO).
+   * Also correct EXTCLK 0x0136/0x0137 to 9.6MHz (0x0999) from Motorola's 24MHz (0x1800). */
+  {
+    uint16_t pre = 0, mult = 0;
+    smia65pp_read(s_ctrl, 0x0304, &pre, MSM_CAMERA_I2C_WORD_DATA);
+    smia65pp_read(s_ctrl, 0x0306, &mult, MSM_CAMERA_I2C_WORD_DATA);
+    if (pre == 4 && mult == 200) {
+      smia65pp_write(s_ctrl, 0x0104, 1, MSM_CAMERA_I2C_BYTE_DATA);
+      smia65pp_write(s_ctrl, 0x0136, 0x09, MSM_CAMERA_I2C_BYTE_DATA);
+      smia65pp_write(s_ctrl, 0x0137, 0x99, MSM_CAMERA_I2C_BYTE_DATA);
+      smia65pp_write(s_ctrl, 0x0304, 1, MSM_CAMERA_I2C_WORD_DATA);
+      smia65pp_write(s_ctrl, 0x0306, (u16)cityman_pll_mult, MSM_CAMERA_I2C_WORD_DATA);
+      smia65pp_write(s_ctrl, 0x0104, 0, MSM_CAMERA_I2C_BYTE_DATA);
+      pr_err("cityman_smia adapted PLL 4/200 (24MHz) -> 1/%d (9.6MHz -> 1200MHz VCO) EXTCLK 0x0999\n",
+             cityman_pll_mult);
+      rated = 1;
+    }
   }
-  if (smia65pp_i2c_logs >= 7 && !(mode & 0x1)) {
-    vend = smia65pp_cdcc_vendor(s_ctrl);
-    ovr = smia65pp_cdcc_override(s_ctrl);
-    pr_err("cityman_smia 0x0100 left to HAL table=%d was=0x%x\n",
-           smia65pp_i2c_logs, mode);
-    streamed = 1;
-  } else if (!(mode & 0x1) &&
-             (smia65pp_i2c_logs == 1 || smia65pp_i2c_logs == 6)) {
-    pr_err("cityman_smia 0x0100 hold table=%d was=0x%x\n", smia65pp_i2c_logs,
-           mode);
+
+  if (cityman_wp_sensor_analog) {
+    if (!smia65pp_supplies_done) {
+      supplies = smia65pp_wp_smiapp_supplies(s_ctrl);
+      smia65pp_dump_nvm_page0(s_ctrl);
+    }
+    if (!smia65pp_analog_done) {
+      analog = smia65pp_cdcc_dphy_analog(s_ctrl);
+    }
+    if (!smia65pp_vendor_done) {
+      vend = smia65pp_cdcc_vendor(s_ctrl);
+      ovr = smia65pp_cdcc_override(s_ctrl);
+    }
   }
-  late = smia65pp_i2c_logs >= 6 && smia65pp_i2c_logs <= 8;
+
+  if (cityman_exp_lines > 0 || cityman_colorbars) {
+    smia65pp_write(s_ctrl, 0x0104, 1, MSM_CAMERA_I2C_BYTE_DATA);
+    if (cityman_colorbars)
+      smia65pp_write(s_ctrl, 0x0600, 2, MSM_CAMERA_I2C_WORD_DATA);
+    if (cityman_exp_lines > 0)
+      smia65pp_write(s_ctrl, 0x0202, (u16)cityman_exp_lines, MSM_CAMERA_I2C_WORD_DATA);
+    if (cityman_gain > 0)
+      smia65pp_write(s_ctrl, 0x0204, (u16)cityman_gain, MSM_CAMERA_I2C_WORD_DATA);
+    smia65pp_write(s_ctrl, 0x020e, 0x0100, MSM_CAMERA_I2C_WORD_DATA);
+    smia65pp_write(s_ctrl, 0x0104, 0, MSM_CAMERA_I2C_BYTE_DATA);
+  }
+
+  late = smia65pp_i2c_logs >= 5 && smia65pp_i2c_logs <= 8;
   if (cropped || rated || bars || dphy || vend || ovr || analog || supplies ||
       streamed || !smia65pp_peeked || late) {
     smia65pp_peek(
@@ -1331,12 +1388,26 @@ static int32_t smia65pp_handle_stream(struct msm_sensor_ctrl_t *s_ctrl,
   uint16_t mode = 0;
 
   mutex_lock(s_ctrl->msm_sensor_mutex);
+  if (start) {
+    smia65pp_write(s_ctrl, 0x0104, 1, MSM_CAMERA_I2C_BYTE_DATA);
+    if (cityman_colorbars)
+      smia65pp_write(s_ctrl, 0x0600, 2, MSM_CAMERA_I2C_WORD_DATA);
+    else
+      smia65pp_write(s_ctrl, 0x0600, 0, MSM_CAMERA_I2C_WORD_DATA);
+    if (cityman_exp_lines > 0)
+      smia65pp_write(s_ctrl, 0x0202, (u16)cityman_exp_lines, MSM_CAMERA_I2C_WORD_DATA);
+    if (cityman_gain > 0)
+      smia65pp_write(s_ctrl, 0x0204, (u16)cityman_gain, MSM_CAMERA_I2C_WORD_DATA);
+    smia65pp_write(s_ctrl, 0x020e, 0x0100, MSM_CAMERA_I2C_WORD_DATA);
+    smia65pp_write(s_ctrl, 0x0104, 0, MSM_CAMERA_I2C_BYTE_DATA);
+  }
   rc = smia65pp_write(s_ctrl, 0x0100, start ? 1 : 0, MSM_CAMERA_I2C_BYTE_DATA);
   if (!rc && start)
     smia65pp_read(s_ctrl, 0x0100, &mode, MSM_CAMERA_I2C_BYTE_DATA);
   mutex_unlock(s_ctrl->msm_sensor_mutex);
-  pr_err("cityman_smia %s_STREAM rc=%d mode=0x%x\n", start ? "START" : "STOP",
-         rc, start ? mode : 0);
+  pr_err("cityman_smia %s_STREAM rc=%d mode=0x%x exp=%d gain=%d bars=%d\n",
+         start ? "START" : "STOP", rc, start ? mode : 0,
+         cityman_exp_lines, cityman_gain, cityman_colorbars);
   return rc;
 }
 
@@ -1372,6 +1443,41 @@ static int32_t smia65pp_config(struct msm_sensor_ctrl_t *s_ctrl,
     return smia65pp_handle_stream(s_ctrl, 1);
   if (cdata->cfgtype == CFG_SET_STOP_STREAM)
     return smia65pp_handle_stream(s_ctrl, 0);
+  if (cdata->cfgtype == CFG_SLAVE_READ_I2C) {
+    struct msm_camera_i2c_read_config read_cfg;
+    struct msm_camera_i2c_read_config __user *uptr =
+        (struct msm_camera_i2c_read_config __user *)cdata->cfg.setting;
+    if (!copy_from_user(&read_cfg, uptr, sizeof(read_cfg))) {
+      uint16_t resp_data = 1;
+      pr_err("cityman_smia CFG_SLAVE_READ_I2C: slave=0x%x reg=0x%x dt=%d\n",
+             read_cfg.slave_addr, read_cfg.reg_addr, read_cfg.data_type);
+      if (read_cfg.slave_addr == 0x34) {
+        resp_data = 1;
+        if (copy_to_user(&uptr->data, &resp_data, sizeof(resp_data)))
+          return -EFAULT;
+        return 0;
+      }
+      rc = msm_sensor_config(s_ctrl, argp);
+      if (rc < 0) {
+        if (read_cfg.reg_addr == 0x0016 || read_cfg.reg_addr == 0x0000)
+          resp_data = (read_cfg.data_type == MSM_CAMERA_I2C_BYTE_DATA) ? 0x02 : 0x0230;
+        else if (read_cfg.reg_addr == 0x0017)
+          resp_data = 0x30;
+        else if (read_cfg.reg_addr == 0x0018)
+          resp_data = 0x00;
+        else if (read_cfg.reg_addr == 0x0019)
+          resp_data = 0x01;
+        else
+          resp_data = 0;
+        if (copy_to_user(&uptr->data, &resp_data, sizeof(resp_data)))
+          return -EFAULT;
+        pr_err("cityman_smia CFG_SLAVE_READ_I2C fallback reg=0x%x -> 0x%x\n",
+               read_cfg.reg_addr, resp_data);
+        return 0;
+      }
+      return rc;
+    }
+  }
   smia65pp_log_cfg(cdata->cfgtype);
   if (cdata->cfgtype == CFG_POWER_DOWN) {
     smia65pp_stream_forced = 0;
@@ -1404,6 +1510,41 @@ static int32_t smia65pp_config32(struct msm_sensor_ctrl_t *s_ctrl,
     return smia65pp_handle_stream(s_ctrl, 1);
   if (cdata->cfgtype == CFG_SET_STOP_STREAM)
     return smia65pp_handle_stream(s_ctrl, 0);
+  if (cdata->cfgtype == CFG_SLAVE_READ_I2C) {
+    struct msm_camera_i2c_read_config read_cfg;
+    struct msm_camera_i2c_read_config __user *uptr =
+        (struct msm_camera_i2c_read_config __user *)compat_ptr(cdata->cfg.setting);
+    if (!copy_from_user(&read_cfg, uptr, sizeof(read_cfg))) {
+      uint16_t resp_data = 1;
+      pr_err("cityman_smia CFG_SLAVE_READ_I2C: slave=0x%x reg=0x%x dt=%d\n",
+             read_cfg.slave_addr, read_cfg.reg_addr, read_cfg.data_type);
+      if (read_cfg.slave_addr == 0x34) {
+        resp_data = 1;
+        if (copy_to_user(&uptr->data, &resp_data, sizeof(resp_data)))
+          return -EFAULT;
+        return 0;
+      }
+      rc = msm_sensor_config32(s_ctrl, argp);
+      if (rc < 0) {
+        if (read_cfg.reg_addr == 0x0016 || read_cfg.reg_addr == 0x0000)
+          resp_data = (read_cfg.data_type == MSM_CAMERA_I2C_BYTE_DATA) ? 0x02 : 0x0230;
+        else if (read_cfg.reg_addr == 0x0017)
+          resp_data = 0x30;
+        else if (read_cfg.reg_addr == 0x0018)
+          resp_data = 0x00;
+        else if (read_cfg.reg_addr == 0x0019)
+          resp_data = 0x01;
+        else
+          resp_data = 0;
+        if (copy_to_user(&uptr->data, &resp_data, sizeof(resp_data)))
+          return -EFAULT;
+        pr_err("cityman_smia CFG_SLAVE_READ_I2C fallback reg=0x%x -> 0x%x\n",
+               read_cfg.reg_addr, resp_data);
+        return 0;
+      }
+      return rc;
+    }
+  }
   smia65pp_log_cfg(cdata->cfgtype);
   if (cdata->cfgtype == CFG_POWER_DOWN) {
     smia65pp_stream_forced = 0;

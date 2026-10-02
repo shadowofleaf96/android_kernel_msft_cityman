@@ -359,11 +359,11 @@ int msm_isp_axi_check_stream_state(
   enum msm_vfe_axi_state valid_state =
       (stream_cfg_cmd->cmd == START_STREAM) ? INACTIVE : ACTIVE;
 
-  if (stream_cfg_cmd->num_streams > MAX_NUM_STREAM)
+  if (stream_cfg_cmd->num_streams > VFE_AXI_SRC_MAX)
     return -EINVAL;
 
   for (i = 0; i < stream_cfg_cmd->num_streams; i++) {
-    if (HANDLE_TO_IDX(stream_cfg_cmd->stream_handle[i]) >= MAX_NUM_STREAM) {
+    if (HANDLE_TO_IDX(stream_cfg_cmd->stream_handle[i]) >= VFE_AXI_SRC_MAX) {
       return -EINVAL;
     }
     stream_info =
@@ -640,13 +640,8 @@ void msm_isp_notify(struct vfe_device *vfe_dev, uint32_t event_type,
   event_data.timestamp = ts->event_time;
   event_data.mono_timestamp = ts->buf_time;
   if (event_type == ISP_EVENT_SOF) {
-    static unsigned n;
-
-    if (n < 8) {
-      n++;
-      pr_err("cityman_vfe send SOF n=%u src=%u fid=%u type=0x%x\n", n,
-             frame_src, event_data.frame_id, event_type | frame_src);
-    }
+    pr_err_ratelimited("cityman_vfe send SOF src=%u fid=%u type=0x%x\n",
+           frame_src, event_data.frame_id, event_type | frame_src);
   }
   msm_isp_send_event(vfe_dev, event_type | frame_src, &event_data);
 }
@@ -828,6 +823,8 @@ int msm_isp_request_axi_stream(struct vfe_device *vfe_dev, void *arg) {
 
     vfe_dev->hw_info->vfe_ops.axi_ops.cfg_wm_xbar_reg(vfe_dev, stream_info, i);
   }
+  pr_err("cityman_vfe CFG_AXI_STREAM src=%d planes=%d\n",
+         stream_info->stream_src, stream_info->num_planes);
   return rc;
 }
 
@@ -838,7 +835,7 @@ int msm_isp_release_axi_stream(struct vfe_device *vfe_dev, void *arg) {
   struct msm_vfe_axi_stream *stream_info;
   struct msm_vfe_axi_stream_cfg_cmd stream_cfg;
 
-  if (HANDLE_TO_IDX(stream_release_cmd->stream_handle) >= MAX_NUM_STREAM) {
+  if (HANDLE_TO_IDX(stream_release_cmd->stream_handle) >= VFE_AXI_SRC_MAX) {
     pr_err("%s: Invalid stream handle\n", __func__);
     return -EINVAL;
   }
@@ -1153,7 +1150,7 @@ static int msm_isp_cfg_ping_pong_address(struct vfe_device *vfe_dev,
 
     if (rc < 0) {
       vfe_dev->error_info.stream_framedrop_count[stream_idx]++;
-      vfe_dev->error_info.framedrop_flag = 1;
+      vfe_dev->error_info.framedrop_flag = 1; pr_err("cityman_vfe get_buf failed src=%d idx=%d\n", stream_info->stream_src, stream_idx);
       return rc;
     }
 
@@ -1544,18 +1541,60 @@ msm_isp_axi_wait_for_cfg_done(struct vfe_device *vfe_dev,
     vfe_dev->axi_data.pipeline_update = camif_update;
   }
   spin_unlock_irqrestore(&vfe_dev->shared_data_lock, flags);
+  /*
+   * If no frames have arrived yet from any active source (camif_sof_frame_id == 0
+   * and frame_id == 0), the sensor is not transmitting and hardware cannot fire
+   * a REG_UPDATE IRQ on frame boundary. Apply the stream update immediately without waiting.
+   */
+  {
+    bool has_running_src = false;
+    for (i = 0; i < VFE_SRC_MAX; i++) {
+      if (src_mask & (1 << i)) {
+        if (vfe_dev->axi_data.src_info[i].frame_id > 0) {
+          has_running_src = true;
+          break;
+        }
+      }
+    }
+    if (!has_running_src) {
+      pr_warn("%s: no active frames flowing (all fid=0), applying immediate stream update\n", __func__);
+      for (i = 0; i < VFE_SRC_MAX; i++) {
+        if (src_mask & (1 << i)) {
+          while (vfe_dev->axi_data.stream_update[i] > 0)
+            msm_isp_axi_stream_update(vfe_dev, i);
+        }
+      }
+      return 0;
+    }
+  }
+  /*
+   * Kick a reg_update so the hardware fires a REG_UPDATE IRQ on the
+   * next frame boundary.  process_reg_update will then call
+   * msm_isp_axi_stream_update() for every source whose stream_update
+   * counter is non-zero, which applies the pending stream config and
+   * eventually signals stream_config_complete.
+   *
+   * Without this write the START_PENDING stream added to an
+   * already-running source (e.g. ZSL snapshot after preview) would
+   * never be picked up — the epoch handler skips non-ACTIVE streams
+   * in msm_isp_update_framedrop_reg(), so no reg_update is issued
+   * from there either.
+   */
+  for (i = 0; i < VFE_SRC_MAX; i++) {
+    if (src_mask & (1 << i))
+      vfe_dev->hw_info->vfe_ops.core_ops.reg_update(vfe_dev, i);
+  }
   rc = wait_for_completion_timeout(&vfe_dev->stream_config_complete,
                                    msecs_to_jiffies(VFE_MAX_CFG_TIMEOUT));
   if (rc == 0) {
+    pr_warn("%s: wait timeout, applying fallback stream update\n", __func__);
     for (i = 0; i < VFE_SRC_MAX; i++) {
       if (src_mask & (1 << i)) {
-        spin_lock_irqsave(&vfe_dev->shared_data_lock, flags);
-        vfe_dev->axi_data.stream_update[i] = 0;
-        spin_unlock_irqrestore(&vfe_dev->shared_data_lock, flags);
+        while (vfe_dev->axi_data.stream_update[i] > 0)
+          msm_isp_axi_stream_update(vfe_dev, i);
       }
     }
-    pr_err("%s: wait timeout\n", __func__);
-    rc = -EBUSY;
+    rc = 0;
   } else {
     rc = 0;
   }
@@ -1811,7 +1850,8 @@ msm_isp_start_axi_stream(struct vfe_device *vfe_dev,
 
     stream_info->state = START_PENDING;
     pr_debug("%s, Stream 0x%x\n", __func__, stream_info->stream_id);
-    if (src_state) {
+    if (src_state &&
+        axi_data->src_info[SRC_TO_INTF(stream_info->stream_src)].frame_id > 0) {
       src_mask |= (1 << SRC_TO_INTF(stream_info->stream_src));
       wait_for_complete = 1;
     } else {
@@ -2119,6 +2159,8 @@ static int msm_isp_request_frame(struct vfe_device *vfe_dev,
   }
 
   spin_lock_irqsave(&stream_info->lock, flags);
+  pr_err("cityman_vfe request_frame stream=%x user=%x src=%d id=%d undelivered=%d\n",
+         stream_info->stream_id, user_stream_id, frame_src, frame_id, stream_info->undelivered_request_cnt);
   queue_req = &stream_info->request_queue_cmd[stream_info->request_q_idx];
   if (queue_req->cmd_used) {
     spin_unlock_irqrestore(&stream_info->lock, flags);
@@ -2409,15 +2451,8 @@ void msm_isp_process_axi_irq(struct vfe_device *vfe_dev, uint32_t irq_status0,
   if (!(comp_mask || wm_mask))
     return;
 
-  {
-    static unsigned n;
-
-    if (n < 8) {
-      n++;
-      pr_err("cityman_vfe axi irq n=%u s0=0x%x s1=0x%x comp=0x%x wm=0x%x\n", n,
-             irq_status0, irq_status1, comp_mask, wm_mask);
-    }
-  }
+  pr_err_ratelimited("cityman_vfe axi irq s0=0x%x s1=0x%x comp=0x%x wm=0x%x\n",
+         irq_status0, irq_status1, comp_mask, wm_mask);
   ISP_DBG("%s: status: 0x%x\n", __func__, irq_status0);
   pingpong_status =
       vfe_dev->hw_info->vfe_ops.axi_ops.get_pingpong_status(vfe_dev);

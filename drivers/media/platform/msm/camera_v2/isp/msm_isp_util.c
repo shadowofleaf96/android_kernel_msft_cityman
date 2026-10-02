@@ -21,6 +21,13 @@
 #include "msm_isp_util.h"
 
 #define MAX_ISP_V4l2_EVENTS 100
+
+/* Cityman CAMIF geometry cache — defined in msm_isp46.c */
+extern uint32_t cityman_cache_3b4;
+extern uint32_t cityman_cache_3b8;
+extern uint32_t cityman_cache_3bc;
+extern uint32_t cityman_cache_3ac;
+extern uint32_t cityman_cache_39c;
 static DEFINE_MUTEX(bandwidth_mgr_mutex);
 static struct msm_isp_bandwidth_mgr isp_bandwidth_mgr;
 
@@ -434,15 +441,8 @@ int msm_isp_subscribe_event(struct v4l2_subdev *sd, struct v4l2_fh *fh,
                             struct v4l2_event_subscription *sub) {
   struct vfe_device *vfe_dev = v4l2_get_subdevdata(sd);
   int rc = 0;
-  {
-    static unsigned n;
-
-    if (n < 8) {
-      n++;
-      pr_err("cityman_vfe subscribe n=%u type=0x%x id=%u flags=0x%x\n", n,
-             sub->type, sub->id, sub->flags);
-    }
-  }
+  pr_err_ratelimited("cityman_vfe subscribe type=0x%x id=%u flags=0x%x\n",
+         sub->type, sub->id, sub->flags);
   rc = v4l2_event_subscribe(fh, sub, MAX_ISP_V4l2_EVENTS, NULL);
   if (rc == 0) {
     if (sub->type == V4L2_EVENT_ALL || sub->type < ISP_EVENT_BASE) {
@@ -642,6 +642,15 @@ int msm_isp_cfg_pix(struct vfe_device *vfe_dev,
   if (input_cfg->d.pix_cfg.input_mux == CAMIF) {
     vfe_dev->axi_data.src_info[VFE_PIX_0].width =
         input_cfg->d.pix_cfg.camif_cfg.pixels_per_line;
+    
+    pr_err("cityman_isp CAMIF_CFG: ppl=%u lpf=%u first_pix=%u last_pix=%u first_line=%u last_line=%u\n",
+           input_cfg->d.pix_cfg.camif_cfg.pixels_per_line,
+           input_cfg->d.pix_cfg.camif_cfg.lines_per_frame,
+           input_cfg->d.pix_cfg.camif_cfg.first_pixel,
+           input_cfg->d.pix_cfg.camif_cfg.last_pixel,
+           input_cfg->d.pix_cfg.camif_cfg.first_line,
+           input_cfg->d.pix_cfg.camif_cfg.last_line);
+
     if (input_cfg->d.pix_cfg.camif_cfg.subsample_cfg.sof_counter_step > 0) {
       vfe_dev->axi_data.src_info[VFE_PIX_0].sof_counter_step =
           input_cfg->d.pix_cfg.camif_cfg.subsample_cfg.sof_counter_step;
@@ -898,11 +907,14 @@ static long msm_isp_ioctl_unlocked(struct v4l2_subdev *sd, unsigned int cmd,
     mutex_unlock(&vfe_dev->buf_mgr->lock);
     mutex_unlock(&vfe_dev->core_mutex);
     break;
-  case VIDIOC_MSM_ISP_INPUT_CFG:
+  case VIDIOC_MSM_ISP_INPUT_CFG: {
+    struct msm_vfe_input_cfg *incfg = arg;
     mutex_lock(&vfe_dev->core_mutex);
     rc = msm_isp_cfg_input(vfe_dev, arg);
     mutex_unlock(&vfe_dev->core_mutex);
+    pr_err("cityman_isp INPUT_CFG src=%u rc=%ld\n", incfg ? incfg->input_src : 999, rc);
     break;
+  }
   case VIDIOC_MSM_ISP_FETCH_ENG_START:
     mutex_lock(&vfe_dev->core_mutex);
     rc = vfe_dev->hw_info->vfe_ops.core_ops.start_fetch_eng(vfe_dev, arg);
@@ -1044,6 +1056,21 @@ static int msm_isp_send_hw_cmd(struct vfe_device *vfe_dev,
              cmd_len);
       return -EINVAL;
     }
+    
+    if (reg_cfg_cmd->cmd_type == VFE_WRITE || reg_cfg_cmd->cmd_type == VFE_WRITE_MB) {
+      uint32_t offset = reg_cfg_cmd->u.rw_info.reg_offset;
+      uint32_t len = reg_cfg_cmd->u.rw_info.len;
+      if (offset >= 0x200 && offset <= 0x800) {
+        pr_err("cityman_vfe REG_WRITE offset=0x%X len=%u\n", offset, len);
+      } else if (offset < 0x200) {
+        uint32_t *data = (uint32_t *)(cfg_data + reg_cfg_cmd->u.rw_info.cmd_data_offset / 4);
+        pr_err("cityman_vfe REG_WRITE_LOW offset=0x%X len=%u val=0x%X\n", offset, len, data[0]);
+      }
+      if ((offset <= 0x3B4) && ((offset + len) > 0x3B4)) {
+        pr_err("cityman_vfe HAL writing to CAMIF offset=0x%X len=%u. We will fix it up afterwards.\n", offset, len);
+      }
+    }
+    
     break;
   }
 
@@ -1098,16 +1125,21 @@ static int msm_isp_send_hw_cmd(struct vfe_device *vfe_dev,
 
   switch (reg_cfg_cmd->cmd_type) {
   case VFE_WRITE: {
-    msm_camera_io_memcpy(vfe_dev->vfe_base + reg_cfg_cmd->u.rw_info.reg_offset,
-                         cfg_data + reg_cfg_cmd->u.rw_info.cmd_data_offset / 4,
-                         reg_cfg_cmd->u.rw_info.len);
+    int i;
+    uint32_t *data = (uint32_t *)(cfg_data + reg_cfg_cmd->u.rw_info.cmd_data_offset / 4);
+    for (i = 0; i < reg_cfg_cmd->u.rw_info.len; i += 4) {
+      uint32_t current_offset = reg_cfg_cmd->u.rw_info.reg_offset + i;
+      msm_camera_io_w(data[i / 4], vfe_dev->vfe_base + current_offset);
+    }
     break;
   }
   case VFE_WRITE_MB: {
-    msm_camera_io_memcpy_mb(
-        vfe_dev->vfe_base + reg_cfg_cmd->u.rw_info.reg_offset,
-        cfg_data + reg_cfg_cmd->u.rw_info.cmd_data_offset / 4,
-        reg_cfg_cmd->u.rw_info.len);
+    int i;
+    uint32_t *data = (uint32_t *)(cfg_data + reg_cfg_cmd->u.rw_info.cmd_data_offset / 4);
+    for (i = 0; i < reg_cfg_cmd->u.rw_info.len; i += 4) {
+      uint32_t current_offset = reg_cfg_cmd->u.rw_info.reg_offset + i;
+      msm_camera_io_w_mb(data[i / 4], vfe_dev->vfe_base + current_offset);
+    }
     break;
   }
   case VFE_CFG_MASK: {
@@ -1120,6 +1152,12 @@ static int msm_isp_send_hw_cmd(struct vfe_device *vfe_dev,
       pr_err("%s: VFE_CFG_MASK: Invalid length\n", __func__);
       return -EINVAL;
     }
+    
+    pr_err("cityman_vfe VFE_CFG_MASK offset=0x%X mask=0x%X val=0x%X\n",
+           reg_cfg_cmd->u.mask_info.reg_offset,
+           reg_cfg_cmd->u.mask_info.mask,
+           reg_cfg_cmd->u.mask_info.val);
+
     grab_lock = vfe_dev->hw_info->vfe_ops.core_ops.is_module_cfg_lock_needed(
         reg_cfg_cmd->u.mask_info.reg_offset);
     if (grab_lock)
@@ -1229,8 +1267,12 @@ static int msm_isp_send_hw_cmd(struct vfe_device *vfe_dev,
           (UINT_MAX / sizeof(*data_ptr) < (data_ptr - cfg_data)) ||
           (sizeof(*data_ptr) * (data_ptr - cfg_data) >= cmd_len))
         return -EINVAL;
-      *data_ptr++ = msm_camera_io_r(vfe_dev->vfe_base +
-                                    reg_cfg_cmd->u.rw_info.reg_offset);
+      if (reg_cfg_cmd->u.rw_info.reg_offset == 0) {
+        *data_ptr++ = 0x4000000A; /* spoof VFE44_8084V1_VERSION for vendor blobs */
+      } else {
+        *data_ptr++ = msm_camera_io_r(vfe_dev->vfe_base +
+                                      reg_cfg_cmd->u.rw_info.reg_offset);
+      }
       reg_cfg_cmd->u.rw_info.reg_offset += 4;
     }
     break;
@@ -1831,6 +1873,8 @@ void msm_isp_do_tasklet(unsigned long data) {
       msm_isp_process_iommu_page_fault(vfe_dev);
       continue;
     }
+    if (vfe_dev->pdev->id == 0 || vfe_dev->pdev->id == 1)
+      pr_err_ratelimited("cityman_vfe IRQ s0=0x%x s1=0x%x camif_status(0x3d0)=0x%x\n", irq_status0, irq_status1, msm_camera_io_r(vfe_dev->vfe_base + 0x3D0));
     ISP_DBG("%s: vfe_id %d status0: 0x%x status1: 0x%x\n", __func__,
             vfe_dev->pdev->id, irq_status0, irq_status1);
     irq_ops->process_reset_irq(vfe_dev, irq_status0, irq_status1);

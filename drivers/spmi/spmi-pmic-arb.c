@@ -830,10 +830,13 @@ periph_interrupt(struct spmi_pmic_arb_dev *pmic_arb, u8 apid, bool show)
 	int i;
 
 	if (!is_apid_valid(pmic_arb, apid)) {
-		dev_err(pmic_arb->dev,
-		"periph_interrupt(apid:0x%x sid:0x%x pid:0x%x) unknown peripheral\n",
+		dev_err_ratelimited(pmic_arb->dev,
+		"periph_interrupt(apid:0x%x sid:0x%x pid:0x%x) unknown peripheral, disabling\n",
 			apid, sid, pid);
-		/* return IRQ_NONE; */
+		spmi_pic_acc_en_wr(pmic_arb, 0, sid, pid, apid, "disable_unknown");
+		writel_relaxed(0xFF, intr + pmic_arb->ver->irq_clear(apid));
+		mb();
+		return IRQ_HANDLED;
 	}
 
 	status = spmi_pic_acc_en_rd(pmic_arb, sid, pid, apid, "isr");

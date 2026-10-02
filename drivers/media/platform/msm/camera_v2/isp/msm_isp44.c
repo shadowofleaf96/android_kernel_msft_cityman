@@ -301,20 +301,12 @@ static void msm_vfe44_process_input_irq(struct vfe_device *vfe_dev,
   if (irq_status0 & 0x1)
     vfe_dev->axi_data.src_info[VFE_PIX_0].camif_sof_frame_id++;
   if (irq_status0 & 0x3) {
-    static int cityman_vfe_camif_irq;
-
-    if (cityman_vfe_camif_irq < 8) {
-      cityman_vfe_camif_irq++;
-      pr_err("cityman_vfe camif irq n=%d s0=0x%x s1=0x%x sof=%d eof=%d fid=%u "
-             "st=0x%x\n",
-             cityman_vfe_camif_irq, irq_status0, irq_status1,
-             !!(irq_status0 & 1), !!(irq_status0 & 2),
-             vfe_dev->axi_data.src_info[VFE_PIX_0].camif_sof_frame_id,
-             msm_camera_io_r(vfe_dev->vfe_base + 0x31C));
-      cityman_vfe_mid_dev = vfe_dev;
-      mod_delayed_work(system_wq, &cityman_vfe_camif_mid_w,
-                       msecs_to_jiffies(10));
-    }
+    pr_err_ratelimited("cityman_vfe camif irq s0=0x%x s1=0x%x sof=%d eof=%d fid=%u "
+           "st=0x%x\n",
+           irq_status0, irq_status1,
+           !!(irq_status0 & 1), !!(irq_status0 & 2),
+           vfe_dev->axi_data.src_info[VFE_PIX_0].camif_sof_frame_id,
+           msm_camera_io_r(vfe_dev->vfe_base + 0x31C));
   }
 
   if (vfe_dev->axi_data.src_info[VFE_PIX_0].camif_sof_frame_id == 0)
@@ -590,14 +582,9 @@ static void msm_vfe44_process_epoch_irq(struct vfe_device *vfe_dev,
     return;
 
   if (irq_status0 & BIT(2)) {
-    static int cityman_vfe_epoch;
-
-    if (cityman_vfe_epoch < 8) {
-      cityman_vfe_epoch++;
-      pr_err("cityman_vfe camif EPOCH0 n=%d s0=0x%x fid=%u\n",
-             cityman_vfe_epoch, irq_status0,
-             vfe_dev->axi_data.src_info[VFE_PIX_0].camif_sof_frame_id);
-    }
+    pr_err_ratelimited("cityman_vfe camif EPOCH0 s0=0x%x fid=%u\n",
+           irq_status0,
+           vfe_dev->axi_data.src_info[VFE_PIX_0].camif_sof_frame_id);
     msm_isp_notify(vfe_dev, ISP_EVENT_SOF, VFE_PIX_0, ts);
     ISP_DBG("%s: EPOCH0 IRQ\n", __func__);
     msm_isp_update_framedrop_reg(vfe_dev, VFE_PIX_0);
@@ -1066,15 +1053,11 @@ static void msm_vfe44_cfg_camif(struct vfe_device *vfe_dev,
     uint32_t cityman_lpf = camif_cfg->lines_per_frame;
 
     if (cityman_ppl == 4080) {
-      cityman_ppl = 2496;
-      cityman_lpf = 1872;
+      cityman_ppl = 4088;
+      last_pixel = cityman_ppl - 1;
     }
-    first_pixel = 0;
-    last_pixel = cityman_ppl - 1;
-    first_line = 0;
-    last_line = cityman_lpf ? cityman_lpf - 1 : 0;
-    pr_err("cityman_vfe camif ff0b ppl %u -> %u lpf=%u win=%u..%u x %u..%u\n",
-           camif_cfg->pixels_per_line, cityman_ppl, cityman_lpf, first_pixel,
+    pr_err("cityman_vfe camif ppl %u lpf=%u win=%u..%u x %u..%u\n",
+           cityman_ppl, cityman_lpf, first_pixel,
            last_pixel, first_line, last_line);
     msm_camera_io_w(cityman_lpf << 16 | cityman_ppl, vfe_dev->vfe_base + 0x300);
   }
@@ -1083,11 +1066,11 @@ static void msm_vfe44_cfg_camif(struct vfe_device *vfe_dev,
 
   msm_camera_io_w(first_line << 16 | last_line, vfe_dev->vfe_base + 0x308);
   pr_err("cityman_vfe camif clk=%ld mux=%u pat=%u in=%u %ux%u win=%u..%u x "
-         "%u..%u hbi=%u\n",
+         "%u..%u\n",
          vfe_dev->axi_data.src_info[VFE_PIX_0].pixel_clock, pix_cfg->input_mux,
          pix_cfg->pixel_pattern, camif_cfg->camif_input,
          camif_cfg->pixels_per_line, camif_cfg->lines_per_frame, first_pixel,
-         last_pixel, first_line, last_line, camif_cfg->hbi_cnt);
+         last_pixel, first_line, last_line);
   /* V40 CAMIF blob: 0x2FC = EFS. CAF v2 left it 0. */
   msm_camera_io_w(0x00200040, vfe_dev->vfe_base + 0x2FC);
   pr_err("cityman_vfe camif efs 0x2fc=0x00200040 (eol=64 eof=32)\n");
@@ -1106,9 +1089,8 @@ static void msm_vfe44_cfg_camif(struct vfe_device *vfe_dev,
   }
   val = msm_camera_io_r(vfe_dev->vfe_base + 0x2E8);
   val |= camif_cfg->camif_input;
-  val = 0x3;
   msm_camera_io_w(val, vfe_dev->vfe_base + 0x2E8);
-  pr_err("cityman_vfe camif 0x2e8=0x3 (MIPI_EN, no RDI_EN)\n");
+  pr_err("cityman_vfe camif 0x2e8=0x%x (camif_input=0x%x)\n", val, camif_cfg->camif_input);
 }
 
 static void msm_vfe44_cfg_input_mux(struct vfe_device *vfe_dev,

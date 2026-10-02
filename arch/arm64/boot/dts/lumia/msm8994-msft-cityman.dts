@@ -23,3 +23,6 @@
 	qcom,board-id = <26 0>;
 	qcom,pmic-id = <0x20009 0x2000a 0x0 0x0>;
 };
+
+
+
