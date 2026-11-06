@@ -81,6 +81,70 @@ static int32_t msm_actuator_piezo_set_default_focus(
 	return rc;
 }
 
+/*
+ * cityman (Lumia 950 XL) rear module: ROHM BU63165 OIS/AF at 7-bit 0x3e on
+ * CCI1 with 16-bit register addresses. The Windows driver moves the lens by
+ * writing the target to 0x05f0 (high byte) / 0x05f1 (low byte), then 0x02 to
+ * 0x05f2 and 0x01 to 0x05f3. The OnePlus 2 tuning (libactuator_rohm_bu63165gwl)
+ * drives a different BU63165 wiring, so its register table and init settings
+ * are ignored here and only its lens positions are used.
+ */
+#define CITYMAN_AF_SID		0x3e
+#define CITYMAN_AF_POS_MAX	0x07ff
+static int cityman_af_log = 1;
+module_param(cityman_af_log, int, 0644);
+/*
+ * The tuning's codes [initial_code, initial_code + total_steps] are mapped
+ * linearly onto the module's DAC range [cityman_af_inf, cityman_af_mac].
+ * Measured best-focus DACs: far 896, ~0.5 m 992, close-up 1152; nothing
+ * sharpens past ~1300. 840 and 1400 leave the AF search a margin each side.
+ * cityman_af_manual >= 0 pins every write to that DAC (calibration).
+ */
+static int cityman_af_inf = 840, cityman_af_mac = 1500, cityman_af_manual = -1;
+module_param(cityman_af_inf, int, 0644);
+module_param(cityman_af_mac, int, 0644);
+module_param(cityman_af_manual, int, 0644);
+static int cityman_af_code_lo, cityman_af_code_hi;
+module_param(cityman_af_code_lo, int, 0644);
+module_param(cityman_af_code_hi, int, 0644);
+
+static void cityman_af_parse_i2c_params(struct msm_actuator_ctrl_t *a_ctrl,
+	int16_t next_lens_position, uint16_t delay)
+{
+	struct msm_camera_i2c_reg_array *t = a_ctrl->i2c_reg_tbl;
+	uint32_t i = a_ctrl->i2c_tbl_index;
+	int32_t pos = next_lens_position;
+
+	if (i + 4 > (a_ctrl->total_steps + 1) * 4) {
+		pr_err("cityman_af: i2c table full\n");
+		return;
+	}
+	if (cityman_af_inf >= 0 && cityman_af_mac >= 0 &&
+		cityman_af_code_hi > cityman_af_code_lo) {
+		if (pos < cityman_af_code_lo)
+			pos = cityman_af_code_lo;
+		if (pos > cityman_af_code_hi)
+			pos = cityman_af_code_hi;
+		pos = cityman_af_inf + (pos - cityman_af_code_lo) *
+			(cityman_af_mac - cityman_af_inf) /
+			(cityman_af_code_hi - cityman_af_code_lo);
+	}
+	if (cityman_af_manual >= 0)
+		pos = cityman_af_manual;
+	if (pos < 0)
+		pos = 0;
+	if (pos > CITYMAN_AF_POS_MAX)
+		pos = CITYMAN_AF_POS_MAX;
+	if (cityman_af_log)
+		pr_err("cityman_af: pos %d -> DAC %d (0x%04x) delay %u\n",
+			next_lens_position, pos, pos, delay);
+	t[i].reg_addr = 0x05f0; t[i].reg_data = (pos >> 8) & 0xff; t[i].delay = 0;
+	t[i + 1].reg_addr = 0x05f1; t[i + 1].reg_data = pos & 0xff; t[i + 1].delay = 0;
+	t[i + 2].reg_addr = 0x05f2; t[i + 2].reg_data = 0x02; t[i + 2].delay = 0;
+	t[i + 3].reg_addr = 0x05f3; t[i + 3].reg_data = 0x01; t[i + 3].delay = delay;
+	a_ctrl->i2c_tbl_index = i + 4;
+}
+
 static void msm_actuator_parse_i2c_params(struct msm_actuator_ctrl_t *a_ctrl,
 	int16_t next_lens_position, uint32_t hw_params, uint16_t delay)
 {
@@ -96,6 +160,11 @@ static void msm_actuator_parse_i2c_params(struct msm_actuator_ctrl_t *a_ctrl,
 		(!a_ctrl->reg_tbl) ||
 		(!a_ctrl->i2c_reg_tbl)) {
 		pr_err("failed. NULL actuator pointers");
+		return;
+	}
+
+	if (a_ctrl->cityman_bu63165) {
+		cityman_af_parse_i2c_params(a_ctrl, next_lens_position, delay);
 		return;
 	}
 
@@ -1171,7 +1240,7 @@ static int32_t msm_actuator_bivcm_set_position(
 	}
 
 	a_ctrl->i2c_tbl_index = 0;
-	hw_params = set_pos->hw_params;
+	hw_params = 0;
 	for (index = 0; index < set_pos->number_of_steps; index++) {
 		next_lens_position = set_pos->pos[index];
 		delay = set_pos->delay[index];
@@ -1238,6 +1307,31 @@ static int32_t msm_actuator_set_param(struct msm_actuator_ctrl_t *a_ctrl,
 
 	a_ctrl->i2c_data_type = set_info->actuator_params.i2c_data_type;
 	a_ctrl->i2c_client.addr_type = set_info->actuator_params.i2c_addr_type;
+	if (a_ctrl->cityman_bu63165) {
+		pr_err("cityman_af: set_info act_type %d i2c 0x%x addr_t %d data_t %d reg_tbl %d init %d steps %d init_code %d regions %d\n",
+			set_info->actuator_params.act_type,
+			set_info->actuator_params.i2c_addr,
+			set_info->actuator_params.i2c_addr_type,
+			set_info->actuator_params.i2c_data_type,
+			set_info->actuator_params.reg_tbl_size,
+			set_info->actuator_params.init_setting_size,
+			set_info->af_tuning_params.total_steps,
+			set_info->af_tuning_params.initial_code,
+			a_ctrl->region_size);
+		for (i = 0; i < a_ctrl->region_size; i++)
+			pr_err("cityman_af: region %d steps %d..%d code_per_step %d\n", i,
+				a_ctrl->region_params[i].step_bound[1],
+				a_ctrl->region_params[i].step_bound[0],
+				a_ctrl->region_params[i].code_per_step);
+		a_ctrl->func_tbl = &msm_vcm_actuator_table.func_tbl;
+		cityman_af_code_lo = set_info->af_tuning_params.initial_code;
+		cityman_af_code_hi = cityman_af_code_lo +
+			set_info->af_tuning_params.total_steps;
+		if (a_ctrl->act_device_type == MSM_CAMERA_PLATFORM_DEVICE)
+			a_ctrl->i2c_client.cci_client->sid = CITYMAN_AF_SID;
+		a_ctrl->i2c_data_type = MSM_CAMERA_I2C_BYTE_DATA;
+		a_ctrl->i2c_client.addr_type = MSM_CAMERA_I2C_WORD_ADDR;
+	}
 	if (set_info->actuator_params.reg_tbl_size <=
 		MAX_ACTUATOR_REG_TBL_SIZE) {
 		a_ctrl->reg_tbl_size = set_info->actuator_params.reg_tbl_size;
@@ -1255,7 +1349,8 @@ static int32_t msm_actuator_set_param(struct msm_actuator_ctrl_t *a_ctrl,
 	a_ctrl->i2c_reg_tbl = NULL;
 	a_ctrl->i2c_reg_tbl =
 		kzalloc(sizeof(struct msm_camera_i2c_reg_array) *
-		(set_info->af_tuning_params.total_steps + 1), GFP_KERNEL);
+		(set_info->af_tuning_params.total_steps + 1) *
+		(a_ctrl->cityman_bu63165 ? 4 : 1), GFP_KERNEL);
 	if (!a_ctrl->i2c_reg_tbl) {
 		pr_err("kzalloc fail\n");
 		return -ENOMEM;
@@ -1272,7 +1367,8 @@ static int32_t msm_actuator_set_param(struct msm_actuator_ctrl_t *a_ctrl,
 		return -EFAULT;
 	}
 
-	if (set_info->actuator_params.init_setting_size &&
+	if (!a_ctrl->cityman_bu63165 &&
+		set_info->actuator_params.init_setting_size &&
 		set_info->actuator_params.init_setting_size
 		<= MAX_ACTUATOR_INIT_SET) {
 		if (a_ctrl->func_tbl->actuator_init_focus) {
@@ -1316,6 +1412,17 @@ static int32_t msm_actuator_set_param(struct msm_actuator_ctrl_t *a_ctrl,
 		rc = a_ctrl->func_tbl->
 			actuator_init_step_table(a_ctrl, set_info);
 
+	if (a_ctrl->cityman_bu63165 && a_ctrl->step_position_table &&
+		a_ctrl->total_steps > 0) {
+		cityman_af_code_lo = a_ctrl->step_position_table[0];
+		cityman_af_code_hi =
+			a_ctrl->step_position_table[a_ctrl->total_steps];
+		pr_err("cityman_af: range code [%d..%d] (steps=%d) mapped to DAC [%d..%d]\n",
+			cityman_af_code_lo, cityman_af_code_hi,
+			a_ctrl->total_steps,
+			cityman_af_inf, cityman_af_mac);
+	}
+
 	a_ctrl->curr_step_pos = 0;
 	a_ctrl->curr_region_index = 0;
 	CDBG("Exit\n");
@@ -1351,6 +1458,8 @@ static int32_t msm_actuator_config(struct msm_actuator_ctrl_t *a_ctrl,
 	mutex_lock(a_ctrl->actuator_mutex);
 	CDBG("Enter\n");
 	CDBG("%s type %d\n", __func__, cdata->cfgtype);
+	pr_err("cityman_act: config cfgtype=%d bu63165=%d\n",
+		cdata->cfgtype, a_ctrl->cityman_bu63165);
 	switch (cdata->cfgtype) {
 	case CFG_ACTUATOR_INIT:
 		rc = msm_actuator_init(a_ctrl);
@@ -1360,6 +1469,8 @@ static int32_t msm_actuator_config(struct msm_actuator_ctrl_t *a_ctrl,
 	case CFG_GET_ACTUATOR_INFO:
 		cdata->is_af_supported = 1;
 		cdata->cfg.cam_name = a_ctrl->cam_name;
+		pr_err("cityman_act: GET_INFO is_af_supported=%d cam_name=%d\n",
+			cdata->is_af_supported, cdata->cfg.cam_name);
 		rc = 0;
 		break;
 
@@ -1374,6 +1485,8 @@ static int32_t msm_actuator_config(struct msm_actuator_ctrl_t *a_ctrl,
 			a_ctrl->func_tbl->actuator_set_default_focus)
 			rc = a_ctrl->func_tbl->actuator_set_default_focus(
 				a_ctrl,	&cdata->cfg.move);
+		else
+			rc = 0;
 		if (rc < 0)
 			pr_err("move focus failed %d\n", rc);
 		break;
@@ -1383,6 +1496,8 @@ static int32_t msm_actuator_config(struct msm_actuator_ctrl_t *a_ctrl,
 			a_ctrl->func_tbl->actuator_move_focus)
 			rc = a_ctrl->func_tbl->actuator_move_focus(a_ctrl,
 				&cdata->cfg.move);
+		else
+			rc = 0;
 		if (rc < 0)
 			pr_err("move focus failed %d\n", rc);
 		break;
@@ -1425,10 +1540,12 @@ static int32_t msm_actuator_get_subdev_id(struct msm_actuator_ctrl_t *a_ctrl,
 		return -EINVAL;
 	}
 	if (a_ctrl->act_device_type == MSM_CAMERA_PLATFORM_DEVICE)
-		*subdev_id = a_ctrl->pdev->id;
+		*subdev_id = a_ctrl->pdev ? a_ctrl->pdev->id : a_ctrl->subdev_id;
 	else
 		*subdev_id = a_ctrl->subdev_id;
 
+	pr_info("cityman_act: get_subdev_id returning %u (pdev=%d subdev_id=%u type=%d)\n",
+		*subdev_id, a_ctrl->pdev ? a_ctrl->pdev->id : -1, a_ctrl->subdev_id, a_ctrl->act_device_type);
 	CDBG("subdev_id %d\n", *subdev_id);
 	CDBG("Exit\n");
 	return 0;
@@ -1487,6 +1604,11 @@ static const struct v4l2_subdev_internal_ops msm_actuator_internal_ops = {
 	.close = msm_actuator_close,
 };
 
+#ifdef CONFIG_COMPAT
+static long msm_actuator_subdev_do_ioctl(
+	struct v4l2_subdev *sd, unsigned int cmd, void *arg);
+#endif
+
 static long msm_actuator_subdev_ioctl(struct v4l2_subdev *sd,
 			unsigned int cmd, void *arg)
 {
@@ -1495,11 +1617,17 @@ static long msm_actuator_subdev_ioctl(struct v4l2_subdev *sd,
 	void __user *argp = (void __user *)arg;
 	CDBG("Enter\n");
 	CDBG("%s:%d a_ctrl %pK argp %pK\n", __func__, __LINE__, a_ctrl, argp);
+	pr_err("cityman_act: subdev_ioctl cmd=0x%x\n", cmd);
 	switch (cmd) {
 	case VIDIOC_MSM_SENSOR_GET_SUBDEV_ID:
 		return msm_actuator_get_subdev_id(a_ctrl, argp);
 	case VIDIOC_MSM_ACTUATOR_CFG:
 		return msm_actuator_config(a_ctrl, argp);
+#ifdef CONFIG_COMPAT
+	case VIDIOC_MSM_ACTUATOR_CFG32:
+	case 0xc0c856c6:
+		return msm_actuator_subdev_do_ioctl(sd, cmd, arg);
+#endif
 	case MSM_SD_SHUTDOWN:
 		if (!a_ctrl->i2c_client.i2c_func_tbl) {
 			pr_err("a_ctrl->i2c_client.i2c_func_tbl NULL\n");
@@ -1515,6 +1643,10 @@ static long msm_actuator_subdev_ioctl(struct v4l2_subdev *sd,
 			return msm_actuator_close(sd, NULL);
 		}
 	default:
+#ifdef CONFIG_COMPAT
+		if (_IOC_TYPE(cmd) == 'V' && _IOC_NR(cmd) == (BASE_VIDIOC_PRIVATE + 6))
+			return msm_actuator_subdev_do_ioctl(sd, cmd, arg);
+#endif
 		pr_err_ratelimited("unsupported compat type 0x%x\n", cmd);
 		return -ENOIOCTLCMD;
 	}
@@ -1522,18 +1654,24 @@ static long msm_actuator_subdev_ioctl(struct v4l2_subdev *sd,
 
 #ifdef CONFIG_COMPAT
 static long msm_actuator_subdev_do_ioctl(
-	struct file *file, unsigned int cmd, void *arg)
+	struct v4l2_subdev *sd, unsigned int cmd, void *arg)
 {
-	struct video_device *vdev = video_devdata(file);
-	struct v4l2_subdev *sd = vdev_to_v4l2_subdev(vdev);
+	struct msm_actuator_ctrl_t *a_ctrl = v4l2_get_subdevdata(sd);
 	struct msm_actuator_cfg_data32 *u32 =
 		(struct msm_actuator_cfg_data32 *)arg;
 	struct msm_actuator_cfg_data actuator_data;
 	void *parg = arg;
 	long rc;
 
+	pr_info("cityman_act: compat_do_ioctl cmd=0x%x\n", cmd);
+
 	switch (cmd) {
+	case VIDIOC_MSM_SENSOR_GET_SUBDEV_ID:
+		return msm_actuator_get_subdev_id(a_ctrl, arg);
+
 	case VIDIOC_MSM_ACTUATOR_CFG32:
+	case 0xc0c856c6:
+handle_actuator_cfg:
 		cmd = VIDIOC_MSM_ACTUATOR_CFG;
 		switch (u32->cfgtype) {
 		case CFG_SET_ACTUATOR_INFO:
@@ -1629,22 +1767,21 @@ static long msm_actuator_subdev_do_ioctl(
 			actuator_data.is_af_supported = u32->is_af_supported;
 			memcpy(&actuator_data.cfg.setpos, &(u32->cfg.setpos),
 				sizeof(struct msm_actuator_set_position_t));
+			parg = &actuator_data;
 			break;
 		default:
 			actuator_data.cfgtype = u32->cfgtype;
 			parg = &actuator_data;
 			break;
 		}
-	}
 
-	rc = msm_actuator_subdev_ioctl(sd, cmd, parg);
-
-	switch (cmd) {
-
-	case VIDIOC_MSM_ACTUATOR_CFG:
+		rc = msm_actuator_config(a_ctrl, parg);
 
 		switch (u32->cfgtype) {
-
+		case CFG_GET_ACTUATOR_INFO:
+			u32->is_af_supported = actuator_data.is_af_supported;
+			u32->cfg.cam_name = actuator_data.cfg.cam_name;
+			break;
 		case CFG_SET_DEFAULT_FOCUS:
 		case CFG_MOVE_FOCUS:
 			u32->cfg.move.curr_lens_pos =
@@ -1653,15 +1790,28 @@ static long msm_actuator_subdev_do_ioctl(
 		default:
 			break;
 		}
-	}
+		return rc;
 
-	return rc;
+	default:
+		if (_IOC_TYPE(cmd) == 'V' && _IOC_NR(cmd) == (BASE_VIDIOC_PRIVATE + 6))
+			goto handle_actuator_cfg;
+		return msm_actuator_subdev_ioctl(sd, cmd, arg);
+	}
+}
+
+static long msm_actuator_subdev_fops_ioctl_worker(
+	struct file *file, unsigned int cmd, void *arg)
+{
+	struct video_device *vdev = video_devdata(file);
+	struct v4l2_subdev *sd = vdev_to_v4l2_subdev(vdev);
+
+	return msm_actuator_subdev_do_ioctl(sd, cmd, arg);
 }
 
 static long msm_actuator_subdev_fops_ioctl(struct file *file, unsigned int cmd,
 	unsigned long arg)
 {
-	return video_usercopy(file, cmd, arg, msm_actuator_subdev_do_ioctl);
+	return video_usercopy(file, cmd, arg, msm_actuator_subdev_fops_ioctl_worker);
 }
 #endif
 
@@ -1823,6 +1973,8 @@ static int32_t msm_actuator_platform_probe(struct platform_device *pdev)
 		pr_err("failed rc %d\n", rc);
 		return rc;
 	}
+	msm_actuator_t->cityman_bu63165 = of_property_read_bool(
+		(&pdev->dev)->of_node, "qcom,cityman-bu63165");
 
 	if (of_find_property((&pdev->dev)->of_node,
 			"qcom,cam-vreg-name", NULL)) {
@@ -1839,6 +1991,7 @@ static int32_t msm_actuator_platform_probe(struct platform_device *pdev)
 	msm_actuator_t->act_v4l2_subdev_ops = &msm_actuator_subdev_ops;
 	msm_actuator_t->actuator_mutex = &msm_actuator_mutex;
 	msm_actuator_t->cam_name = pdev->id;
+	msm_actuator_t->subdev_id = pdev->id;
 
 	/* Set platform device handle */
 	msm_actuator_t->pdev = pdev;

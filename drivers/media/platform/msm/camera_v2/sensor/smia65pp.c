@@ -716,6 +716,15 @@ static void smia65pp_ident_work_fn(struct work_struct *work) {
   mutex_unlock(&smia65pp_list_lock);
 }
 
+/*
+ * cameraserver enumerates /dev/media sensors right after CFG_SINIT_PROBE_WAIT_DONE,
+ * which came before the delayed ident above: it cached a bogus camera (orientation 1,
+ * so Snap died with "Invalid rotation") until it was restarted. Finish it now.
+ */
+void smia65pp_flush_ident(void) {
+  flush_delayed_work(&smia65pp_ident_work);
+}
+
 static int32_t smia65pp_platform_probe(struct platform_device *pdev) {
   int32_t rc;
   struct msm_sensor_ctrl_t *s_ctrl;
@@ -815,15 +824,21 @@ static int cityman_pll_mult = 125;
 module_param_named(pll_mult, cityman_pll_mult, int, 0644);
 MODULE_PARM_DESC(pll_mult, "PLL multiplier for 9.6MHz MCLK (default 125 for 1200MHz VCO, 124 for 1190.4MHz)");
 
+static int cityman_op_pll_fix = 1;
+module_param_named(op_pll_fix, cityman_op_pll_fix, int, 0644);
+MODULE_PARM_DESC(op_pll_fix, "Also re-derive the OP (MIPI) PLL for 9.6MHz MCLK (default 1=on)");
+
 static int cityman_colorbars = 0;
 module_param_named(colorbars, cityman_colorbars, int, 0644);
 MODULE_PARM_DESC(colorbars, "Enable sensor test pattern color bars (default 0=off, 1=on)");
 
-static int cityman_exp_lines = 1500;
+/* 0 = let AEC drive 0x0202/0x0204. A non-zero value is re-written after every
+ * HAL I2C table (AEC updates included), pinning exposure: dark, static preview. */
+static int cityman_exp_lines = 0;
 module_param_named(exp_lines, cityman_exp_lines, int, 0644);
 MODULE_PARM_DESC(exp_lines, "Default coarse integration time in lines (default 1500)");
 
-static int cityman_gain = 256;
+static int cityman_gain = 0;
 module_param_named(gain, cityman_gain, int, 0644);
 MODULE_PARM_DESC(gain, "Default analogue gain code (default 256 = 2.0x)");
 
@@ -1325,15 +1340,33 @@ static void smia65pp_after_qcam_i2c(struct msm_sensor_ctrl_t *s_ctrl) {
     uint16_t pre = 0, mult = 0;
     smia65pp_read(s_ctrl, 0x0304, &pre, MSM_CAMERA_I2C_WORD_DATA);
     smia65pp_read(s_ctrl, 0x0306, &mult, MSM_CAMERA_I2C_WORD_DATA);
-    if (pre == 4 && mult == 200) {
+    /* Every Motorola mode table uses VT pre-div 4 at 24MHz (4/200 full size,
+     * 4/187 for 4664x2624, ...). Keep each mode's VCO: mult * 24/4 / 9.6. */
+    if (pre == 4 && mult) {
+      u16 vt_new = (mult == 200) ? (u16)cityman_pll_mult : (u16)DIV_ROUND_CLOSEST(mult * 5u, 8u);
       smia65pp_write(s_ctrl, 0x0104, 1, MSM_CAMERA_I2C_BYTE_DATA);
       smia65pp_write(s_ctrl, 0x0136, 0x09, MSM_CAMERA_I2C_BYTE_DATA);
       smia65pp_write(s_ctrl, 0x0137, 0x99, MSM_CAMERA_I2C_BYTE_DATA);
       smia65pp_write(s_ctrl, 0x0304, 1, MSM_CAMERA_I2C_WORD_DATA);
-      smia65pp_write(s_ctrl, 0x0306, (u16)cityman_pll_mult, MSM_CAMERA_I2C_WORD_DATA);
+      smia65pp_write(s_ctrl, 0x0306, vt_new, MSM_CAMERA_I2C_WORD_DATA);
+      /* The OP PLL (0x030C/0x030E, MIPI bit clock in dual-PLL mode) is still set
+       * for 24MHz too: from 9.6MHz it runs at 40% of 0x0820, so the sensor drops
+       * ~60% of each frame's lines (CAMIF 0x712 of 4016). Keep its VCO. */
+      if (cityman_op_pll_fix) {
+        uint16_t op_pre = 0, op_mult = 0, op_new;
+        smia65pp_read(s_ctrl, 0x030c, &op_pre, MSM_CAMERA_I2C_WORD_DATA);
+        smia65pp_read(s_ctrl, 0x030e, &op_mult, MSM_CAMERA_I2C_WORD_DATA);
+        if (op_pre && op_mult) {
+          op_new = (u16)DIV_ROUND_CLOSEST(24000u * op_mult / op_pre, 9600u);
+          smia65pp_write(s_ctrl, 0x030c, 1, MSM_CAMERA_I2C_WORD_DATA);
+          smia65pp_write(s_ctrl, 0x030e, op_new, MSM_CAMERA_I2C_WORD_DATA);
+          pr_err("cityman_smia adapted OP PLL %u/%u (24MHz) -> 1/%u (%u kHz VCO)\n",
+                 op_pre, op_mult, op_new, 9600u * op_new);
+        }
+      }
       smia65pp_write(s_ctrl, 0x0104, 0, MSM_CAMERA_I2C_BYTE_DATA);
-      pr_err("cityman_smia adapted PLL 4/200 (24MHz) -> 1/%d (9.6MHz -> 1200MHz VCO) EXTCLK 0x0999\n",
-             cityman_pll_mult);
+      pr_err("cityman_smia adapted VT PLL 4/%u (24MHz) -> 1/%u (%u kHz VCO) EXTCLK 0x0999\n",
+             mult, vt_new, 9600u * vt_new);
       rated = 1;
     }
   }

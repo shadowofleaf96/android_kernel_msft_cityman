@@ -45,9 +45,7 @@
 	qcom,dc-psy-type = "Wireless";
 	qcom,dc-psy-ma = <900>;
 	qcom,usb-cc-controller;
-	qcom,disable-apsd;
 	qcom,disable-hvdcp;
 	qcom,customized-jeita;
-	/delete-property/ qcom,thermal-mitigation;
-	qcom,ibat-thermal-mitigation = <1400 1200 600 1200 300 1200 100 600 0 0>;
+	qcom,thermal-mitigation = <2600 2200 1800 1400 1000 500 0>;
 };

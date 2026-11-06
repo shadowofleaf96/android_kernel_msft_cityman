@@ -755,7 +755,7 @@ int32_t msm_sensor_driver_probe(void *setting,
   if (!s_ctrl) {
     pr_err("failed: s_ctrl %pK for camera_id %d", s_ctrl,
            slave_info->camera_id);
-    rc = -EINVAL;
+    rc = -ENODEV;
     goto free_slave_info;
   }
 

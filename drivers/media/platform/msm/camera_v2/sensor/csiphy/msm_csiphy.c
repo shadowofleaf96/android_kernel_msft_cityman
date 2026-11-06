@@ -30,7 +30,8 @@
 
 /* #49: 0x0234 == 0x4320 (pkts+ECC). Try longer HS-settle. HAL 0x1b is 135ns
  * @ 200 MHz; 0x28 is 200ns. echo -1 leaves the HAL value. */
-static int cityman_settle = 0x23;
+/* 22 = 110 ns: centre of the 14..28 clean window at 1.42 Gbps/lane (WP uses 22). */
+static int cityman_settle = 22;
 module_param_named(settle, cityman_settle, int, 0644);
 MODULE_PARM_DESC(settle, "CSIPHY settle_cnt; -1 = leave HAL value");
 
@@ -383,7 +384,7 @@ msm_csiphy_lane_config(struct csiphy_device *csiphy_dev,
                     csiphy_dev->ctrl_reg->csiphy_reg.mipi_csiphy_lnn_test_imp +
                     0x40 * j);
       if (cityman_cfg4_clr0) {
-        uint32_t c4 = msm_camera_io_r(
+        msm_camera_io_r(
             csiphybase +
             csiphy_dev->ctrl_reg->csiphy_reg.mipi_csiphy_lnn_cfg4_addr +
             0x40 * j);

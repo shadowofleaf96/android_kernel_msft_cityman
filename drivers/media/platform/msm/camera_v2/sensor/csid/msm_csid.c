@@ -302,7 +302,8 @@ static int msm_csid_config(struct csid_device *csid_dev,
       round_rate = clk_round_rate(csid_clk_ptr[cityman_i], cityman_wp);
       rc = clk_set_rate(csid_clk_ptr[cityman_i], round_rate);
       pr_err("cityman_csid wp csi_clk %lu round=%lu now=%lu rc=%d\n",
-             cityman_wp, round_rate, clk_get_rate(csid_clk_ptr[cityman_i]), rc);
+             cityman_wp, (unsigned long)round_rate,
+             (unsigned long)clk_get_rate(csid_clk_ptr[cityman_i]), rc);
       break;
     }
   }

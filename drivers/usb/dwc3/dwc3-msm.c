@@ -91,7 +91,7 @@ module_param(hvdcp_max_current, int, S_IRUGO|S_IWUSR);
 MODULE_PARM_DESC(hvdcp_max_current, "max current drawn for HVDCP charger");
 
 /* Max current to be drawn for DCP charger */
-int dcp_max_current = DWC3_IDEV_CHG_MAX;
+int dcp_max_current = 2600;
 module_param(dcp_max_current, int, S_IRUGO | S_IWUSR);
 MODULE_PARM_DESC(dcp_max_current, "max current drawn for DCP charger");
 

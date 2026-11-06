@@ -2144,12 +2144,13 @@ err_region:
 
 void hif_pci_notify_handler(struct pci_dev *pdev, int state)
 {
-   if (!WLAN_IS_EPPING_ENABLED(vos_get_conparam())) {
-       int ret = 0;
-       ret = hdd_wlan_notify_modem_power_state(state);
-       if (ret < 0)
-          printk(KERN_ERR "%s: Fail to send notify\n", __func__);
-   }
+   /* Cityman / Lumia 950 XL: The modem firmware has a defective COEX QMI IDL
+    * message encoder in coex_qmb.c:230 that triggers a fatal assertion crash
+    * whenever WCI-2 LTE/WLAN coexistence is activated by QCA6174 firmware.
+    * Bypassing modem power state notification here prevents QCA6174 from toggling
+    * WCI-2 UART to the modem, keeping both WiFi and LTE simultaneously stable. */
+   pr_info("%s: Bypassed modem notification (state=%d) to prevent coex_qmb crash\n",
+           __func__, state);
 }
 
 void

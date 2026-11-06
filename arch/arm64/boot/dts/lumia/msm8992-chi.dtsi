@@ -291,7 +291,7 @@
  
  /{
 	 cityman_batterydata: qcom,battery-data {
-		 qcom,batt-id-range-pct = <15>;
+		 qcom,batt-id-range-pct = <100>;
 		 #include "microsoft_bvt5e_3000mah.dtsi"
 	 };
  };

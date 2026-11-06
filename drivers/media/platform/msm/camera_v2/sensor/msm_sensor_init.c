@@ -18,6 +18,10 @@
 #include "msm_sensor.h"
 #include "msm_sd.h"
 
+#ifdef CONFIG_SMIA65PP
+void smia65pp_flush_ident(void);
+#endif
+
 /* Logging macro */
 #undef CDBG
 #define CDBG(fmt, args...) pr_debug(fmt, ##args)
@@ -70,6 +74,10 @@ static int32_t msm_sensor_driver_cmd(struct msm_sensor_init_t *s_init,
 
 	switch (cfg->cfgtype) {
 	case CFG_SINIT_PROBE:
+#ifdef CONFIG_SMIA65PP
+		/* mm-qcamera-daemon probes ~70 ms before the delayed ident is done */
+		smia65pp_flush_ident();
+#endif
 		mutex_lock(&s_init->imutex);
 		s_init->module_init_status = 0;
 		rc = msm_sensor_driver_probe(cfg->cfg.setting,
@@ -86,6 +94,9 @@ static int32_t msm_sensor_driver_cmd(struct msm_sensor_init_t *s_init,
 		break;
 
 	case CFG_SINIT_PROBE_WAIT_DONE:
+#ifdef CONFIG_SMIA65PP
+		smia65pp_flush_ident();
+#endif
 		msm_sensor_wait_for_probe_done(s_init);
 		break;
 
